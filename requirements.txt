@@ -1,0 +1,6 @@
+Flask
+gunicorn
+flask_sqlalchemy
+flask_cors
+flask_jwt_extended
+# Add other packages you use (like requests, mailgun, etc)
