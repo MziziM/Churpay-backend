@@ -45,13 +45,24 @@ class User(db.Model):
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
-    
+
 class Church(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     logo_url = db.Column(db.String(256))
     # Add more fields if you need (address, phone, etc)
+
+# --- Payout Request Model ---
+class PayoutRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    church_id = db.Column(db.Integer, db.ForeignKey('church.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    bank_name = db.Column(db.String(120), nullable=False)
+    account_number = db.Column(db.String(120), nullable=False)
+    account_holder = db.Column(db.String(120), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending') # 'pending', 'approved', 'rejected'
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
 
 # --- DUMMY DATA (keep your demo data for now) ---
 projects = [
@@ -199,6 +210,110 @@ def get_churches():
             "logo_url": c.logo_url
         })
     return jsonify(out)
+
+# --- Church Payout Endpoints ---
+
+# 1. Church requests a payout
+@app.route("/api/church/request-payout", methods=["POST"])
+@jwt_required()
+def request_payout():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or user.role != "church":
+        return jsonify({"error": "Only churches can request payouts."}), 403
+    data = request.json
+    required = ["amount", "bank_name", "account_number", "account_holder"]
+    if not all(x in data and data[x] for x in required):
+        return jsonify({"error": "Missing info."}), 400
+    payout = PayoutRequest(
+        church_id=user.id,
+        amount=data["amount"],
+        bank_name=data["bank_name"],
+        account_number=data["account_number"],
+        account_holder=data["account_holder"],
+    )
+    db.session.add(payout)
+    db.session.commit()
+    return jsonify({"msg": "Payout request submitted!", "payout_id": payout.id})
+
+# 2. Church view their payout history
+@app.route("/api/church/my-payouts", methods=["GET"])
+@jwt_required()
+def my_payouts():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or user.role != "church":
+        return jsonify({"error": "Only churches can view payouts."}), 403
+    payouts = PayoutRequest.query.filter_by(church_id=user.id).order_by(PayoutRequest.created_at.desc()).all()
+    out = []
+    for p in payouts:
+        out.append({
+            "id": p.id,
+            "amount": p.amount,
+            "bank_name": p.bank_name,
+            "account_number": p.account_number,
+            "account_holder": p.account_holder,
+            "status": p.status,
+            "created_at": p.created_at
+        })
+    return jsonify(out)
+
+# 3. Admin view all payout requests
+@app.route("/api/admin/payout-requests", methods=["GET"])
+@jwt_required()
+def all_payout_requests():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or user.role != "admin":
+        return jsonify({"error": "Only admin can view payout requests."}), 403
+    payouts = PayoutRequest.query.order_by(PayoutRequest.created_at.desc()).all()
+    out = []
+    for p in payouts:
+        church = Church.query.get(p.church_id)
+        out.append({
+            "id": p.id,
+            "church": church.name if church else "",
+            "amount": p.amount,
+            "bank_name": p.bank_name,
+            "account_number": p.account_number,
+            "account_holder": p.account_holder,
+            "status": p.status,
+            "created_at": p.created_at
+        })
+    return jsonify(out)
+
+# 4. Admin approve/reject payout
+@app.route("/api/admin/approve-payout", methods=["POST"])
+@jwt_required()
+def approve_payout():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or user.role != "admin":
+        return jsonify({"error": "Only admin can approve payouts."}), 403
+    data = request.json
+    payout_id = data.get("payout_id")
+    payout = PayoutRequest.query.get(payout_id)
+    if not payout:
+        return jsonify({"error": "Payout request not found."}), 404
+    payout.status = "approved"
+    db.session.commit()
+    return jsonify({"msg": "Payout marked as approved."})
+
+@app.route("/api/admin/reject-payout", methods=["POST"])
+@jwt_required()
+def reject_payout():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    if not user or user.role != "admin":
+        return jsonify({"error": "Only admin can reject payouts."}), 403
+    data = request.json
+    payout_id = data.get("payout_id")
+    payout = PayoutRequest.query.get(payout_id)
+    if not payout:
+        return jsonify({"error": "Payout request not found."}), 404
+    payout.status = "rejected"
+    db.session.commit()
+    return jsonify({"msg": "Payout marked as rejected."})
 
 # --- Main entry ---
 if __name__ == "__main__":

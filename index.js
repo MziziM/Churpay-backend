@@ -3,27 +3,58 @@ const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+require('dotenv').config();
+const nodemailer = require('nodemailer');
+const adminRoutes = require('./routes/admin');
 
-const adminRoutes = require("./routes/admin"); // adjust the path if needed
 const app = express();
 
-// --- CORS CONFIGURATION ---
-app.use(cors({
-  origin: [
-    'https://uat.churpay.com',
-    'https://churpay-frontend.onrender.com',
-    'http://localhost:3000', // for local dev
-  ],
+// --- Force 200 for all OPTIONS preflight requests ---
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin) || !origin) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+
+    next();
+  } else {
+    return res.status(403).send('Not allowed by CORS');
+  }
+});
+
+// --- CORS setup ---
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://churpay-web.onrender.com',
+  'https://uat.churpay.com', // Only the correct UAT domain
+  ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()) : [])
+];
+const corsOptions = {
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.options('*', cors()); // Enable preflight for all routes
-
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions), (req, res) => {
+  res.sendStatus(200);
+});
 app.use(express.json());
 
 // --- Set up SQLite DB ---
-const db = new sqlite3.Database('./churpay.db', (err) => {
+const db = new sqlite3.Database(process.env.DB_PATH || './churpay.db', (err) => {
   if (err) return console.error('Database error:', err.message);
   console.log('Connected to ChurPay SQLite database.');
 });
@@ -60,10 +91,10 @@ app.get('/', (req, res) => {
   res.json({ message: 'ChurPay backend API is working! 🎉' });
 });
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 // --- JWT secret for authentication ---
-const JWT_SECRET = 'churpay_secret'; // Change this before production!
+const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
 
 // --- Register New Church/User ---
 app.post('/api/register', async (req, res) => {
@@ -378,7 +409,7 @@ app.get('/api/project-donors/:project_id', (req, res) => {
   );
 });
 
-app.use(adminRoutes);
+app.use('/api/admin', adminRoutes);
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
 
 // --- Register New Member ---
@@ -409,4 +440,116 @@ app.post('/api/register-member', async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Server error.', error: err.message });
   }
+});
+// --- Approve Payout Request ---
+app.post('/api/admin/approve-payout', (req, res) => {
+  const { token, payout_id } = req.body;
+  if (!token || !payout_id) return res.status(400).json({ message: 'Missing info.' });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid token.' });
+    db.get('SELECT is_admin FROM users WHERE id = ?', [user.user_id], (err, admin) => {
+      if (err || !admin || !admin.is_admin) return res.status(403).json({ message: 'Not allowed.' });
+      db.get('SELECT * FROM payout_requests WHERE id = ?', [payout_id], (err, payout) => {
+        if (err || !payout) return res.status(404).json({ message: 'Payout not found.' });
+        db.run('UPDATE payout_requests SET status = "approved" WHERE id = ?', [payout_id], function (err) {
+          if (err) return res.status(500).json({ message: 'DB error.' });
+          db.get('SELECT email FROM users WHERE id = ?', [payout.church_id], (err, row) => {
+            if (row && row.email) {
+              transporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: row.email,
+                subject: "Churpay: Payout Approved",
+                html: `
+                  <h2>Payout Approved!</h2>
+                  <p>Your payout request of <b>R${payout.amount}</b> has been approved and will be processed soon.</p>
+                  <p>Thank you for using Churpay!</p>
+                `
+              }, (err, info) => {
+                if (err) console.log("Email send error:", err);
+                else console.log("Payout approval email sent:", info.response);
+              });
+            }
+          });
+          res.json({ message: 'Payout marked as approved.' });
+        });
+      });
+    });
+  });
+});
+
+// --- Reject Payout Request ---
+app.post('/api/admin/reject-payout', (req, res) => {
+  const { token, payout_id } = req.body;
+  if (!token || !payout_id) return res.status(400).json({ message: 'Missing info.' });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid token.' });
+    db.get('SELECT is_admin FROM users WHERE id = ?', [user.user_id], (err, admin) => {
+      if (err || !admin || !admin.is_admin) return res.status(403).json({ message: 'Not allowed.' });
+      db.get('SELECT * FROM payout_requests WHERE id = ?', [payout_id], (err, payout) => {
+        if (err || !payout) return res.status(404).json({ message: 'Payout not found.' });
+        db.run('UPDATE payout_requests SET status = "rejected" WHERE id = ?', [payout_id], function (err) {
+          if (err) return res.status(500).json({ message: 'DB error.' });
+          db.get('SELECT email FROM users WHERE id = ?', [payout.church_id], (err, row) => {
+            if (row && row.email) {
+              transporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: row.email,
+                subject: "Churpay: Payout Rejected",
+                html: `
+                  <h2>Payout Rejected</h2>
+                  <p>Your payout request of <b>R${payout.amount}</b> has been rejected by admin.</p>
+                  <p>If you have questions, please contact support.</p>
+                `
+              }, (err, info) => {
+                if (err) console.log("Email send error:", err);
+                else console.log("Payout rejection email sent:", info.response);
+              });
+            }
+          });
+          res.json({ message: 'Payout marked as rejected.' });
+        });
+      });
+    });
+  });
+});
+// --- Admin: Get all payout requests ---
+app.post('/api/admin/payout-requests', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(401).json({ message: 'No token provided.' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid token.' });
+    db.get('SELECT is_admin FROM users WHERE id = ?', [user.user_id], (err, admin) => {
+      if (err || !admin || !admin.is_admin) return res.status(403).json({ message: 'Not allowed.' });
+
+      db.all(
+        `SELECT p.*, u.church_name, u.email 
+         FROM payout_requests p
+         JOIN users u ON p.church_id = u.id
+         ORDER BY p.date DESC, p.id DESC`,
+        [],
+        (err, rows) => {
+          if (err) return res.status(500).json({ message: 'Database error.' });
+          res.json(rows);
+        }
+      );
+    });
+  });
+});
+app.post('/api/church/payout-requests', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(401).json({ message: 'No token provided.' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid token.' });
+
+    db.all(
+      `SELECT * FROM payout_requests WHERE church_id = ? ORDER BY date DESC, id DESC`,
+      [user.user_id],
+      (err, rows) => {
+        if (err) return res.status(500).json({ message: 'Database error.' });
+        res.json(rows);
+      }
+    );
+  });
 });
