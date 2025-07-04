@@ -78,14 +78,27 @@ db.prepare(`CREATE TABLE IF NOT EXISTS payout_requests (
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
 
-// --- EXAMPLE: REGISTER USER/CHURCH ---
+// --- EXAMPLE: REGISTER USER/CHURCH/MEMBER ---
 app.post('/api/register', async (req, res) => {
-  const { church_name, email, password } = req.body;
-  if (!church_name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
+  const { role, church_name, name, email, password } = req.body;
+  let finalChurchName;
+  if (role === 'church') {
+    if (!church_name || !email || !password) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+    finalChurchName = church_name;
+  } else if (role === 'member') {
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+    finalChurchName = name; // Store member's name in church_name column for consistency
+  } else {
+    return res.status(400).json({ message: 'Invalid role.' });
+  }
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
     const stmt = db.prepare('INSERT INTO users (church_name, email, password) VALUES (?, ?, ?)');
-    const info = stmt.run(church_name, email, hashedPassword);
+    const info = stmt.run(finalChurchName, email, hashedPassword);
     res.status(201).json({ message: 'Registration successful!', user_id: info.lastInsertRowid });
   } catch (err) {
     if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
