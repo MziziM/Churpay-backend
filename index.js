@@ -16,6 +16,10 @@ const allowedOrigins = [
   ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()) : [])
 ];
 
+const res = await axios.get("https://churpay-backend.onrender.com/api/member/dashboard", {
+  headers: { Authorization: `Bearer ${token}` }
+});
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin) || !origin) {
