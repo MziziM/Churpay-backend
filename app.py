@@ -5,6 +5,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 # --- Initialize app and CORS ---
 app = Flask(__name__)
@@ -143,7 +144,11 @@ def register():
     data = request.json
     if User.query.filter_by(email=data["email"]).first():
         return jsonify({"error": "Email already exists"}), 409
-    user = User(name=data["name"], email=data["email"], role=data["role"])
+    # Accept either 'name' or 'church_name' for registration
+    reg_name = data.get("name") or data.get("church_name")
+    if not reg_name or not data.get("email") or not data.get("password") or not data.get("role"):
+        return jsonify({"error": "All fields are required"}), 400
+    user = User(name=reg_name, email=data["email"], role=data["role"])
     user.set_password(data["password"])
     db.session.add(user)
     db.session.commit()
@@ -310,6 +315,17 @@ def reject_payout():
     payout.status = "rejected"
     db.session.commit()
     return jsonify({"msg": "Payout marked as rejected."})
+
+@app.route("/api/member/dashboard", methods=["GET"])
+@jwt_required()
+def member_dashboard():
+    user_id = get_jwt_identity()
+    # You can fetch user data from the DB if you want
+    return jsonify({
+        "welcome": "Welcome to your member dashboard!",
+        "projects_supported": 3,
+        "total_given": 1500
+    }), 200
 
 # --- Main entry ---
 if __name__ == "__main__":
