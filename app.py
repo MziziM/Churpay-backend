@@ -36,18 +36,38 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- Models ---
+# --- Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="member")  # "member", "church", "admin"
+    account_number = db.Column(db.Integer, unique=True, nullable=False)  # <<--- NEW FIELD
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+def generate_next_account_number(role):
+    if role == "church":
+        last_church = User.query.filter_by(role="church").order_by(User.account_number.desc()).first()
+        if last_church and last_church.account_number >= 2000000:
+            return last_church.account_number + 1
+        return 2000000  # First church account
+    else:
+        last_member = User.query.filter(User.role != "church").order_by(User.account_number.desc()).first()
+        if last_member and last_member.account_number >= 1000000:
+            return last_member.account_number + 1
+        return 1000000  # First member account
+
+# Instead of:
+# next_account_number = generate_next_account_number()
+
+# Do this:
+next_account_number = generate_next_account_number(data["role"])
 
 class Church(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -144,7 +164,7 @@ def update_project_status(project_id):
             return jsonify(p)
     return jsonify({"error": "Project not found"}), 404
 
-# User Registration & Auth
+# --- User Registration & Auth ---
 @app.route("/api/register", methods=["POST", "OPTIONS"])
 def register():
     if request.method == "OPTIONS":
@@ -158,11 +178,13 @@ def register():
         return jsonify({"error": "All fields are required"}), 400
     if data["role"] not in allowed_roles:
         return jsonify({"error": "Invalid role"}), 400
-    user = User(name=reg_name, email=data["email"], role=data["role"])
+    # --- Generate account number here ---
+    next_account_number = generate_next_account_number()
+    user = User(name=reg_name, email=data["email"], role=data["role"], account_number=next_account_number)
     user.set_password(data["password"])
     db.session.add(user)
     db.session.commit()
-    return jsonify({"msg": "Registered!"})
+    return jsonify({"msg": "Registered!", "account_number": next_account_number})
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -170,7 +192,13 @@ def login():
     user = User.query.filter_by(email=data["email"]).first()
     if user and user.check_password(data["password"]):
         token = create_access_token(identity=str(user.id))
-        return jsonify({"token": token, "role": user.role, "name": user.name, "email": user.email})
+        return jsonify({
+            "token": token,
+            "role": user.role,
+            "name": user.name,
+            "email": user.email,
+            "account_number": user.account_number  # <<--- Add this
+        })
     return jsonify({"error": "Invalid credentials"}), 401
 
 @app.route("/api/profile", methods=["GET"])
@@ -178,7 +206,12 @@ def login():
 def profile():
     user_id = get_jwt_identity()
     user = User.query.get(int(user_id))
-    return jsonify({"name": user.name, "email": user.email, "role": user.role})
+    return jsonify({
+        "name": user.name,
+        "email": user.email,
+        "role": user.role,
+        "account_number": user.account_number  # <<--- Add this
+    })
 
 # Create a new church
 @app.route("/api/churches", methods=["POST"])
