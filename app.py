@@ -4,23 +4,18 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
-from flask_cors import CORS   # Only import CORS here
+from flask_cors import CORS
 
-# --- Initialize app ---
+# --- Initialize app and CORS ---
 app = Flask(__name__)
-
-# --- CORS SETUP (this must be AFTER app = Flask(...)) ---
 CORS(app, origins=["https://uat.churpay.com"], supports_credentials=True)
+
 # --- Config ---
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "uploads")
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
-
-# --- Initialize app ---
-app = Flask(__name__)
-CORS(app)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///churpay.db"
 app.config["JWT_SECRET_KEY"] = "super-secret-poi"
