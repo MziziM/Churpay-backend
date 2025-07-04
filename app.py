@@ -9,7 +9,13 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 # --- Initialize app and CORS ---
 app = Flask(__name__)
-CORS(app, origins=["https://uat.churpay.com"], supports_credentials=True)
+CORS(app, origins=[
+    "http://localhost:3000",  # React local dev
+    "http://localhost:5173",  # Vite local dev
+    "http://127.0.0.1:3000",
+    "https://uat.churpay.com",
+    "https://churpay.com"
+], supports_credentials=True)
 
 # --- Config ---
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "uploads")
@@ -139,15 +145,19 @@ def update_project_status(project_id):
     return jsonify({"error": "Project not found"}), 404
 
 # User Registration & Auth
-@app.route("/api/register", methods=["POST"])
+@app.route("/api/register", methods=["POST", "OPTIONS"])
 def register():
+    if request.method == "OPTIONS":
+        return '', 200
     data = request.json
-    if User.query.filter_by(email=data["email"]).first():
+    allowed_roles = {"member", "church", "admin"}
+    if User.query.filter_by(email=data.get("email")).first():
         return jsonify({"error": "Email already exists"}), 409
-    # Accept either 'name' or 'church_name' for registration
     reg_name = data.get("name") or data.get("church_name")
     if not reg_name or not data.get("email") or not data.get("password") or not data.get("role"):
         return jsonify({"error": "All fields are required"}), 400
+    if data["role"] not in allowed_roles:
+        return jsonify({"error": "Invalid role"}), 400
     user = User(name=reg_name, email=data["email"], role=data["role"])
     user.set_password(data["password"])
     db.session.add(user)
