@@ -63,11 +63,6 @@ def generate_next_account_number(role):
             return last_member.account_number + 1
         return 1000000  # First member account
 
-# Instead of:
-# next_account_number = generate_next_account_number()
-
-# Do this:
-next_account_number = generate_next_account_number(data["role"])
 
 class Church(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -179,7 +174,7 @@ def register():
     if data["role"] not in allowed_roles:
         return jsonify({"error": "Invalid role"}), 400
     # --- Generate account number here ---
-    next_account_number = generate_next_account_number()
+    next_account_number = generate_next_account_number(data["role"])
     user = User(name=reg_name, email=data["email"], role=data["role"], account_number=next_account_number)
     user.set_password(data["password"])
     db.session.add(user)
