@@ -23,6 +23,11 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+    
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///churpay.db"
 app.config["JWT_SECRET_KEY"] = "super-secret-poi"
@@ -165,14 +170,14 @@ def register():
     if request.method == "OPTIONS":
         return '', 200
     data = request.json
-    allowed_roles = {"member", "church", "admin"}
+    allowed_roles = {"member", "church"}
     if User.query.filter_by(email=data.get("email")).first():
         return jsonify({"error": "Email already exists"}), 409
     reg_name = data.get("name") or data.get("church_name")
     if not reg_name or not data.get("email") or not data.get("password") or not data.get("role"):
         return jsonify({"error": "All fields are required"}), 400
     if data["role"] not in allowed_roles:
-        return jsonify({"error": "Invalid role"}), 400
+        return jsonify({"error": "Invalid role. Only 'member' and 'church' allowed."}), 400
     # --- Generate account number here ---
     next_account_number = generate_next_account_number(data["role"])
     user = User(name=reg_name, email=data["email"], role=data["role"], account_number=next_account_number)
@@ -180,6 +185,25 @@ def register():
     db.session.add(user)
     db.session.commit()
     return jsonify({"msg": "Registered!", "account_number": next_account_number})
+
+# --- Admin Registration Endpoint ---
+@app.route("/api/admin-register", methods=["POST", "OPTIONS"])
+def admin_register():
+    if request.method == "OPTIONS":
+        return '', 200
+    data = request.json
+    if User.query.filter_by(email=data.get("email")).first():
+        return jsonify({"error": "Email already exists"}), 409
+    if not data.get("name") or not data.get("email") or not data.get("password"):
+        return jsonify({"error": "All fields are required"}), 400
+    # Generate a unique admin account number (start from 9000000)
+    last_admin = User.query.filter_by(role="admin").order_by(User.account_number.desc()).first()
+    next_account_number = last_admin.account_number + 1 if last_admin and last_admin.account_number >= 9000000 else 9000000
+    user = User(name=data["name"], email=data["email"], role="admin", account_number=next_account_number)
+    user.set_password(data["password"])
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"msg": "Admin registered!", "account_number": next_account_number})
 
 @app.route("/api/login", methods=["POST"])
 def login():
