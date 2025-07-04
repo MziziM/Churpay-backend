@@ -7,8 +7,10 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 
-# Allow UAT domain
-CORS(app, origins=["https://uat.churpay.com"])
+app = Flask(__name__)
+
+# PRO CORS SETUP - only allow your UAT frontend
+CORS(app, origins=["https://uat.churpay.com"], supports_credentials=True)
 
 # --- Config ---
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "uploads")
