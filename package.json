@@ -19,7 +19,7 @@
     "dotenv": "^17.0.1",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
-    "mailgun-js": "^0.22.0",
+    "mailgun-js": "^0.6.7",
     "nodemailer": "^7.0.4",
     "recharts": "^3.0.2"
   }
