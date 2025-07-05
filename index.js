@@ -13,14 +13,18 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://churpay-web.onrender.com',
   'https://uat.churpay.com',
+  // ...any other domains you use
   ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()) : [])
 ];
 
 app.use(cors({
   origin: allowedOrigins,
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
+app.options('*', cors()); // Handle preflight requests
 
 // --- DB SETUP ---
 const db = new Database(process.env.DB_PATH || './churpay.db');
