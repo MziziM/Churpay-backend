@@ -23,11 +23,6 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
-    
-if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    app.run(debug=True)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///churpay.db"
 app.config["JWT_SECRET_KEY"] = "super-secret-poi"
@@ -41,33 +36,18 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- Models ---
-# --- Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="member")  # "member", "church", "admin"
-    account_number = db.Column(db.Integer, unique=True, nullable=False)  # <<--- NEW FIELD
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
-
-def generate_next_account_number(role):
-    if role == "church":
-        last_church = User.query.filter_by(role="church").order_by(User.account_number.desc()).first()
-        if last_church and last_church.account_number >= 2000000:
-            return last_church.account_number + 1
-        return 2000000  # First church account
-    else:
-        last_member = User.query.filter(User.role != "church").order_by(User.account_number.desc()).first()
-        if last_member and last_member.account_number >= 1000000:
-            return last_member.account_number + 1
-        return 1000000  # First member account
-
 
 class Church(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -164,29 +144,42 @@ def update_project_status(project_id):
             return jsonify(p)
     return jsonify({"error": "Project not found"}), 404
 
-# --- User Registration & Auth ---
+# User Registration & Auth
 @app.route("/api/register", methods=["POST", "OPTIONS"])
 def register():
     if request.method == "OPTIONS":
         return '', 200
     data = request.json
-    allowed_roles = {"member", "church"}
+    allowed_roles = {"member", "church", "admin"}
     if User.query.filter_by(email=data.get("email")).first():
         return jsonify({"error": "Email already exists"}), 409
     reg_name = data.get("name") or data.get("church_name")
     if not reg_name or not data.get("email") or not data.get("password") or not data.get("role"):
         return jsonify({"error": "All fields are required"}), 400
     if data["role"] not in allowed_roles:
-        return jsonify({"error": "Invalid role. Only 'member' and 'church' allowed."}), 400
-    # --- Generate account number here ---
-    next_account_number = generate_next_account_number(data["role"])
-    user = User(name=reg_name, email=data["email"], role=data["role"], account_number=next_account_number)
+        return jsonify({"error": "Invalid role"}), 400
+    user = User(name=reg_name, email=data["email"], role=data["role"])
     user.set_password(data["password"])
     db.session.add(user)
     db.session.commit()
-    return jsonify({"msg": "Registered!", "account_number": next_account_number})
+    return jsonify({"msg": "Registered!"})
 
-# --- Admin Registration Endpoint ---
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.json
+    user = User.query.filter_by(email=data["email"]).first()
+    if user and user.check_password(data["password"]):
+        token = create_access_token(identity=str(user.id))
+        return jsonify({"token": token, "role": user.role, "name": user.name, "email": user.email})
+    return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route("/api/profile", methods=["GET"])
+@jwt_required()
+def profile():
+    user_id = get_jwt_identity()
+    user = User.query.get(int(user_id))
+    return jsonify({"name": user.name, "email": user.email, "role": user.role})
+
 @app.route("/api/admin-register", methods=["POST", "OPTIONS"])
 def admin_register():
     if request.method == "OPTIONS":
@@ -196,41 +189,11 @@ def admin_register():
         return jsonify({"error": "Email already exists"}), 409
     if not data.get("name") or not data.get("email") or not data.get("password"):
         return jsonify({"error": "All fields are required"}), 400
-    # Generate a unique admin account number (start from 9000000)
-    last_admin = User.query.filter_by(role="admin").order_by(User.account_number.desc()).first()
-    next_account_number = last_admin.account_number + 1 if last_admin and last_admin.account_number >= 9000000 else 9000000
-    user = User(name=data["name"], email=data["email"], role="admin", account_number=next_account_number)
+    user = User(name=data["name"], email=data["email"], role="admin")
     user.set_password(data["password"])
     db.session.add(user)
     db.session.commit()
-    return jsonify({"msg": "Admin registered!", "account_number": next_account_number})
-
-@app.route("/api/login", methods=["POST"])
-def login():
-    data = request.json
-    user = User.query.filter_by(email=data["email"]).first()
-    if user and user.check_password(data["password"]):
-        token = create_access_token(identity=str(user.id))
-        return jsonify({
-            "token": token,
-            "role": user.role,
-            "name": user.name,
-            "email": user.email,
-            "account_number": user.account_number  # <<--- Add this
-        })
-    return jsonify({"error": "Invalid credentials"}), 401
-
-@app.route("/api/profile", methods=["GET"])
-@jwt_required()
-def profile():
-    user_id = get_jwt_identity()
-    user = User.query.get(int(user_id))
-    return jsonify({
-        "name": user.name,
-        "email": user.email,
-        "role": user.role,
-        "account_number": user.account_number  # <<--- Add this
-    })
+    return jsonify({"msg": "Admin registered!"}), 201
 
 # Create a new church
 @app.route("/api/churches", methods=["POST"])

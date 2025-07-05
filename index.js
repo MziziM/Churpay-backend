@@ -139,3 +139,33 @@ app.post('/api/my-transactions', (req, res) => {
 // ...continue for each endpoint using .prepare().run(), .get(), .all() as needed
 
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
+
+// --- Admin: Dashboard stats ---
+app.post('/api/admin/stats', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(401).json({ message: "No token provided." });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: "Invalid token." });
+
+    // Only allow admin
+    db.get('SELECT is_admin FROM users WHERE id = ?', [user.user_id], (err, admin) => {
+      if (err || !admin || !admin.is_admin) return res.status(403).json({ message: "Not allowed." });
+
+      // Get stats: total churches, total users, total transactions, total revenue
+      db.serialize(() => {
+        db.get('SELECT COUNT(*) as total_churches FROM users WHERE is_admin = 0', (err, cRow) => {
+          db.get('SELECT COUNT(*) as total_members FROM users WHERE is_admin = 0', (err2, mRow) => {
+            db.get('SELECT COUNT(*) as total_transactions, SUM(CAST(amount AS FLOAT)) as total_revenue FROM transactions WHERE status="Success"', (err3, tRow) => {
+              res.json({
+                total_churches: cRow?.total_churches || 0,
+                total_members: mRow?.total_members || 0,
+                total_transactions: tRow?.total_transactions || 0,
+                total_revenue: tRow?.total_revenue || 0,
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+});
