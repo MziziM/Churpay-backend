@@ -237,10 +237,22 @@ app.get('/api/transactions', (req, res) => {
   }
 });
 
-// Serve static files from the React app
+// --- 404 handler for unknown API routes (before static serving) ---
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
+
+// Serve static files from the React app (after all API routes)
 app.use(express.static(path.join(__dirname, '../churpay-frontend/build')));
 
 // The "catchall" handler: for any request that doesn't match an API route, send back React's index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../churpay-frontend/build', 'index.html'));
+});
+
+// --- Error handler middleware for better error reporting ---
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error', details: err.message });
 });
