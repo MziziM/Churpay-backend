@@ -16,19 +16,10 @@ const allowedOrigins = [
   ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()) : [])
 ];
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin) || !origin) {
-    res.header('Access-Control-Allow-Origin', origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
-    next();
-  } else {
-    return res.status(403).send('Not allowed by CORS');
-  }
-});
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
 app.use(express.json());
 
 // --- DB SETUP ---
@@ -136,7 +127,23 @@ app.post('/api/my-transactions', (req, res) => {
   }
 });
 
-// ...continue for each endpoint using .prepare().run(), .get(), .all() as needed
+// --- ADMIN REGISTER ENDPOINT ---
+app.post('/api/admin-register', async (req, res) => {
+  const { admin_name, admin_email, password, role } = req.body;
+  if (role !== 'admin') return res.status(400).json({ message: 'Invalid role.' });
+  if (!admin_name || !admin_email || !password) {
+    return res.status(400).json({ message: 'All fields are required.' });
+  }
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const stmt = db.prepare('INSERT INTO users (church_name, email, password, is_admin) VALUES (?, ?, ?, 1)');
+    const info = stmt.run(admin_name, admin_email, hashedPassword);
+    res.status(201).json({ message: 'Admin registration successful!', user_id: info.lastInsertRowid });
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
+    res.status(500).json({ message: 'Database error.', error: err.message });
+  }
+});
 
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
 
@@ -168,4 +175,33 @@ app.post('/api/admin/stats', (req, res) => {
       });
     });
   });
+});
+
+// --- GET: Admin Dashboard Stats (for frontend GET request) ---
+app.get('/api/admin/stats', (req, res) => {
+  // Optionally, add authentication here if needed
+  try {
+    const totalChurches = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
+    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+    const totalTransactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
+    const totalRevenue = db.prepare('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = "Success"').get().sum || 0;
+    res.json({
+      total_churches: totalChurches,
+      total_users: totalUsers,
+      total_transactions: totalTransactions,
+      total_revenue: totalRevenue
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message });
+  }
+});
+
+// --- GET: All Transactions (for frontend GET request) ---
+app.get('/api/transactions', (req, res) => {
+  try {
+    const transactions = db.prepare('SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT 100').all();
+    res.json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch transactions', details: err.message });
+  }
 });
