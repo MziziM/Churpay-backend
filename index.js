@@ -17,14 +17,23 @@ const allowedOrigins = [
   ...(process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()) : [])
 ];
 
-app.use(cors({
-  origin: allowedOrigins,
+// --- Robust, production-safe CORS setup ---
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // Allow requests with no origin (curl, Postman)
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Preflight for all routes
 app.use(express.json());
-app.options('*', cors()); // Handle preflight requests
 
 // --- DB SETUP ---
 const db = new Database(process.env.DB_PATH || './churpay.db');
@@ -164,11 +173,6 @@ app.post('/api/admin-login', async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Server error.', error: err.message });
   }
-});
-
-// Explicit preflight handler for admin-login
-app.options('/api/admin-login', cors(), (req, res) => {
-  res.sendStatus(200);
 });
 
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
