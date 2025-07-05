@@ -166,6 +166,11 @@ app.post('/api/admin-login', async (req, res) => {
   }
 });
 
+// Explicit preflight handler for admin-login
+app.options('/api/admin-login', cors(), (req, res) => {
+  res.sendStatus(200);
+});
+
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
 
 // --- Admin: Dashboard stats ---
