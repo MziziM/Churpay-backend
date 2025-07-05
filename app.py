@@ -194,7 +194,6 @@ def admin_register():
     db.session.add(user)
     db.session.commit()
     return jsonify({"msg": "Admin registered!"}), 201
-
 # Create a new church
 @app.route("/api/churches", methods=["POST"])
 def create_church():
