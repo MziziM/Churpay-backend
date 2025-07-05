@@ -145,6 +145,23 @@ app.post('/api/admin-register', async (req, res) => {
   }
 });
 
+// --- ADMIN LOGIN ENDPOINT ---
+app.post('/api/admin-login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ message: 'All fields required.' });
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE email = ? AND is_admin = 1').get(email);
+    if (!user) return res.status(400).json({ message: 'Invalid credentials or not an admin.' });
+    if (user.suspended) return res.status(403).json({ message: 'Account suspended.' });
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(400).json({ message: 'Invalid credentials.' });
+    const token = jwt.sign({ user_id: user.id, church_name: user.church_name, is_admin: user.is_admin }, JWT_SECRET, { expiresIn: '12h' });
+    res.json({ message: 'Admin login successful!', token, church_name: user.church_name });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error.', error: err.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
 
 // --- Admin: Dashboard stats ---
