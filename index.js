@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
 const adminRoutes = require('./routes/admin');
+const path = require('path');
 
 const app = express();
 
@@ -234,4 +235,12 @@ app.get('/api/transactions', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch transactions', details: err.message });
   }
+});
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, '../churpay-frontend/build')));
+
+// The "catchall" handler: for any request that doesn't match an API route, send back React's index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../churpay-frontend/build', 'index.html'));
 });
