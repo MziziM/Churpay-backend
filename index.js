@@ -259,7 +259,7 @@ app.get('/api/admin/stats', (req, res) => {
         return res.status(500).json({ error: 'Error counting transactions', details: e.message });
       }
       try {
-        totalRevenueRow = db.prepare('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = "Success"').get();
+        totalRevenueRow = db.prepare("SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = 'Success'").get();
         totalRevenue = totalRevenueRow && totalRevenueRow.sum ? totalRevenueRow.sum : 0;
       } catch (e) {
         console.error('Error calculating total revenue:', e);
