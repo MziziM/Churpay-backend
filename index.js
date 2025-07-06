@@ -289,25 +289,77 @@ app.get('/api/transactions', (req, res) => {
   }
 });
 
-// --- 404 handler for unknown API routes (before static serving, but after all real API routes) ---
-app.use('/api', (req, res, next) => {
-  // Only respond to non-OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204); // Let CORS middleware handle OPTIONS
-  }
-  res.status(404).json({ error: 'API endpoint not found' });
+// --- ADMIN: GET ALL PAYOUT REQUESTS ---
+app.get('/api/admin/payout-requests', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token.' });
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    try {
+      const requests = db.prepare(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`).all();
+      res.json(requests);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to fetch payout requests', details: err.message });
+    }
+  });
 });
 
-// Serve static files from the React app (after all API routes)
-app.use(express.static(path.join(__dirname, '../churpay-frontend/build')));
-
-// The "catchall" handler: for any request that doesn't match an API route, send back React's index.html
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../churpay-frontend/build', 'index.html'));
+// --- ADMIN: APPROVE/DENY PAYOUT REQUEST ---
+app.post('/api/admin/payout-requests/:id/action', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token.' });
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    const payoutId = req.params.id;
+    const { action } = req.body;
+    if (!['approve', 'deny'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Must be approve or deny.' });
+    }
+    try {
+      // Check if payout request exists and is pending
+      const payout = db.prepare('SELECT * FROM payout_requests WHERE id = ?').get(payoutId);
+      if (!payout) return res.status(404).json({ error: 'Payout request not found.' });
+      if (payout.status !== 'pending') return res.status(400).json({ error: 'Payout request already processed.' });
+      // Update status
+      const newStatus = action === 'approve' ? 'approved' : 'denied';
+      db.prepare('UPDATE payout_requests SET status = ? WHERE id = ?').run(newStatus, payoutId);
+      // Optionally: send notification email here
+      res.json({ message: `Payout request ${action}d successfully.` });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to process payout request', details: err.message });
+    }
+  });
 });
 
-// --- Global error handler ---
-app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
-  res.status(500).json({ error: 'Internal server error', details: err.message });
+// --- ADMIN: GET ALL CHURCHES ---
+app.get('/api/admin/churches', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token.' });
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    try {
+      const churches = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
+      res.json(churches);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to fetch churches', details: err.message });
+    }
+  });
 });
