@@ -33,7 +33,8 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // Preflight for all routes
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increased limit for large payloads
+app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data with increased limit
 
 // --- DB SETUP ---
 const db = new Database(process.env.DB_PATH || './churpay.db');
@@ -79,7 +80,7 @@ db.prepare(`CREATE TABLE IF NOT EXISTS payout_requests (
   FOREIGN KEY(church_id) REFERENCES users(id)
 )`).run();
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001; // Changed to port 5001 to avoid conflicts
 const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
 
 // --- EXAMPLE: REGISTER USER/CHURCH/MEMBER ---
@@ -176,7 +177,37 @@ app.post('/api/admin-login', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
+// Try ports sequentially until one is available
+const server = app.listen(PORT)
+  .on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`Port ${PORT} is already in use, trying port ${PORT+1}...`);
+      // Try the next port
+      app.listen(PORT+1)
+        .on('error', (err) => {
+          if (err.code === 'EADDRINUSE') {
+            console.log(`Port ${PORT+1} is also in use, trying port ${PORT+2}...`);
+            app.listen(PORT+2)
+              .on('error', (err) => {
+                console.error(`Failed to start server: ${err.message}`);
+              })
+              .on('listening', () => {
+                console.log(`ChurPay backend running on port ${PORT+2}`);
+              });
+          } else {
+            console.error(`Failed to start server: ${err.message}`);
+          }
+        })
+        .on('listening', () => {
+          console.log(`ChurPay backend running on port ${PORT+1}`);
+        });
+    } else {
+      console.error(`Failed to start server: ${err.message}`);
+    }
+  })
+  .on('listening', () => {
+    console.log(`ChurPay backend running on port ${PORT}`);
+  });
 
 // --- Admin: Dashboard stats ---
 app.get('/api/admin/stats', (req, res) => {
@@ -290,24 +321,13 @@ app.get('/api/transactions', (req, res) => {
 });
 
 // --- ADMIN: GET ALL PAYOUT REQUESTS ---
-app.get('/api/admin/payout-requests', (req, res) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid token.' });
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
-    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
-    try {
-      const requests = db.prepare(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`).all();
-      res.json(requests);
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch payout requests', details: err.message });
-    }
-  });
+app.get('/api/admin/payout-requests', requireAdmin, (req, res) => {
+  try {
+    const requests = db.prepare(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`).all();
+    res.json(requests);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch payout requests', details: err.message });
+  }
 });
 
 // --- ADMIN: APPROVE/DENY PAYOUT REQUEST ---
@@ -419,4 +439,54 @@ app.get('/api/admin/members', (req, res) => {
       res.status(500).json({ error: 'Failed to fetch members', details: err.message });
     }
   });
+});
+
+// Middleware to require admin role
+function requireAdmin(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      console.log('JWT error:', err);
+      return res.status(403).json({ error: 'Invalid token.' });
+    }
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) {
+      return res.status(403).json({ error: 'Not allowed (not admin).' });
+    }
+    req.adminUser = user; // Attach user info to request
+    next();
+  });
+}
+
+// Usage example with the requireAdmin middleware
+app.get('/api/admin/members', requireAdmin, (req, res) => {
+  try {
+    const rows = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
+    res.json(rows);
+  } catch (err) {
+    console.log('Failed to fetch members:', err);
+    res.status(500).json({ error: 'Failed to fetch members', details: err.message });
+  }
+});
+
+// --- ADMIN: GET ALL PROJECTS ---
+app.get('/api/admin/projects', requireAdmin, (req, res) => {
+  try {
+    const projects = db.prepare(`
+      SELECT p.*, u.church_name 
+      FROM projects p 
+      LEFT JOIN users u ON p.church_id = u.id 
+      ORDER BY p.created_at DESC, p.id DESC
+    `).all();
+    res.json(projects);
+  } catch (err) {
+    console.log('Failed to fetch projects:', err);
+    res.status(500).json({ error: 'Failed to fetch projects', details: err.message });
+  }
 });
