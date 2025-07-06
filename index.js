@@ -209,12 +209,36 @@ app.get('/api/admin/stats', (req, res) => {
       return res.status(403).json({ error: 'Not allowed (not admin).' });
     }
     try {
-      // Defensive: check if transactions table exists
-      const tableCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'").get();
-      if (!tableCheck) {
+      // Check if required tables exist
+      const usersTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+      const transactionsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'").get();
+      if (!usersTable) {
+        console.error('Users table does not exist!');
+        return res.status(500).json({ error: 'Database error: users table does not exist.' });
+      }
+      if (!transactionsTable) {
         console.error('Transactions table does not exist!');
         return res.status(500).json({ error: 'Database error: transactions table does not exist.' });
       }
+      // Check for required columns in users
+      const userColumns = db.prepare("PRAGMA table_info(users)").all().map(col => col.name);
+      const requiredUserCols = ['id', 'church_name', 'email', 'password', 'is_admin', 'suspended'];
+      for (const col of requiredUserCols) {
+        if (!userColumns.includes(col)) {
+          console.error(`Missing column '${col}' in users table!`);
+          return res.status(500).json({ error: `Database error: missing column '${col}' in users table.` });
+        }
+      }
+      // Check for required columns in transactions
+      const txColumns = db.prepare("PRAGMA table_info(transactions)").all().map(col => col.name);
+      const requiredTxCols = ['id', 'user_id', 'date', 'name', 'amount', 'status'];
+      for (const col of requiredTxCols) {
+        if (!txColumns.includes(col)) {
+          console.error(`Missing column '${col}' in transactions table!`);
+          return res.status(500).json({ error: `Database error: missing column '${col}' in transactions table.` });
+        }
+      }
+      // All checks passed, run queries
       let churches = 0, members = 0, totalTransactions = 0, totalRevenueRow = { sum: 0 }, totalRevenue = 0;
       try {
         churches = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
