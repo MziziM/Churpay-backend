@@ -142,6 +142,7 @@ app.post('/api/my-transactions', (req, res) => {
 
 // --- ADMIN REGISTER ENDPOINT ---
 app.post('/api/admin-register', async (req, res) => {
+  console.log('ADMIN REGISTER BODY:', req.body); // Debug log
   const { admin_name, admin_email, password, role } = req.body;
   if (role !== 'admin') return res.status(400).json({ message: 'Invalid role.' });
   if (!admin_name || !admin_email || !password) {
@@ -178,54 +179,82 @@ app.post('/api/admin-login', async (req, res) => {
 app.listen(PORT, () => console.log(`ChurPay backend running on port ${PORT}`));
 
 // --- Admin: Dashboard stats ---
-app.post('/api/admin/stats', (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(401).json({ message: "No token provided." });
+app.get('/api/admin/stats', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) {
+    console.log('Missing Authorization header');
+    return res.status(401).json({ error: 'No token provided (authHeader missing).' });
+  }
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    console.log('Invalid Authorization header format:', authHeader);
+    return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  }
+  const token = parts[1];
+  if (!token) {
+    console.log('No token after Bearer');
+    return res.status(401).json({ error: 'No token provided (after Bearer).' });
+  }
+
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: "Invalid token." });
+    if (err) {
+      console.log('JWT error:', err);
+      return res.status(403).json({ error: 'Invalid token.' });
+    }
+    console.log('Decoded user:', user);
 
-    // Only allow admin
-    db.get('SELECT is_admin FROM users WHERE id = ?', [user.user_id], (err, admin) => {
-      if (err || !admin || !admin.is_admin) return res.status(403).json({ message: "Not allowed." });
-
-      // Get stats: total churches, total users, total transactions, total revenue
-      db.serialize(() => {
-        db.get('SELECT COUNT(*) as total_churches FROM users WHERE is_admin = 0', (err, cRow) => {
-          db.get('SELECT COUNT(*) as total_members FROM users WHERE is_admin = 0', (err2, mRow) => {
-            db.get('SELECT COUNT(*) as total_transactions, SUM(CAST(amount AS FLOAT)) as total_revenue FROM transactions WHERE status="Success"', (err3, tRow) => {
-              res.json({
-                total_churches: cRow?.total_churches || 0,
-                total_members: mRow?.total_members || 0,
-                total_transactions: tRow?.total_transactions || 0,
-                total_revenue: tRow?.total_revenue || 0,
-              });
-            });
-          });
-        });
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) {
+      console.log('User not admin or not found:', user.user_id, admin);
+      return res.status(403).json({ error: 'Not allowed (not admin).' });
+    }
+    try {
+      // Defensive: check if transactions table exists
+      const tableCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'").get();
+      if (!tableCheck) {
+        console.error('Transactions table does not exist!');
+        return res.status(500).json({ error: 'Database error: transactions table does not exist.' });
+      }
+      let churches = 0, members = 0, totalTransactions = 0, totalRevenueRow = { sum: 0 }, totalRevenue = 0;
+      try {
+        churches = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
+      } catch (e) {
+        console.error('Error counting churches:', e);
+        return res.status(500).json({ error: 'Error counting churches', details: e.message });
+      }
+      try {
+        members = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
+      } catch (e) {
+        console.error('Error counting members:', e);
+        return res.status(500).json({ error: 'Error counting members', details: e.message });
+      }
+      try {
+        totalTransactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
+      } catch (e) {
+        console.error('Error counting transactions:', e);
+        return res.status(500).json({ error: 'Error counting transactions', details: e.message });
+      }
+      try {
+        totalRevenueRow = db.prepare('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = "Success"').get();
+        totalRevenue = totalRevenueRow && totalRevenueRow.sum ? totalRevenueRow.sum : 0;
+      } catch (e) {
+        console.error('Error calculating total revenue:', e);
+        return res.status(500).json({ error: 'Error calculating total revenue', details: e.message });
+      }
+      console.log('STATS DEBUG:', { churches, members, totalTransactions, totalRevenueRow });
+      res.json({
+        churches,
+        members,
+        totalTransactions,
+        totalRevenue
       });
-    });
+    } catch (err) {
+      console.log('Stats error (detailed):', err, err.stack);
+      res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message, stack: err.stack });
+    }
   });
 });
-
-// --- GET: Admin Dashboard Stats (for frontend GET request) ---
-app.get('/api/admin/stats', (req, res) => {
-  // Optionally, add authentication here if needed
-  try {
-    const totalChurches = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
-    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
-    const totalTransactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
-    const totalRevenue = db.prepare('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = "Success"').get().sum || 0;
-    res.json({
-      total_churches: totalChurches,
-      total_users: totalUsers,
-      total_transactions: totalTransactions,
-      total_revenue: totalRevenue
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message });
-  }
-});
-
+       
 // --- GET: All Transactions (for frontend GET request) ---
 app.get('/api/transactions', (req, res) => {
   try {
@@ -251,4 +280,10 @@ app.use(express.static(path.join(__dirname, '../churpay-frontend/build')));
 // The "catchall" handler: for any request that doesn't match an API route, send back React's index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../churpay-frontend/build', 'index.html'));
+});
+
+// --- Global error handler ---
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  res.status(500).json({ error: 'Internal server error', details: err.message });
 });
