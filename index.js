@@ -363,3 +363,60 @@ app.get('/api/admin/churches', (req, res) => {
     }
   });
 });
+
+// --- ADMIN: ADD MEMBER ---
+app.post('/api/admin/members', async (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+  jwt.verify(token, JWT_SECRET, async (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token.' });
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    const { name, email, password, role } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
+    try {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const isAdmin = role === 'admin' ? 1 : 0;
+      const stmt = db.prepare('INSERT INTO users (church_name, email, password, is_admin) VALUES (?, ?, ?, ?)');
+      const info = stmt.run(name, email, hashedPassword, isAdmin);
+      res.status(201).json({ message: 'Member added successfully!', user_id: info.lastInsertRowid });
+    } catch (err) {
+      if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
+      res.status(500).json({ message: 'Database error.', error: err.message });
+    }
+  });
+});
+
+
+// --- GET ALL MEMBERS (for admin) ---
+app.get('/api/admin/members', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      console.log('JWT error:', err);
+      return res.status(403).json({ error: 'Invalid token.' });
+    }
+    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    if (!admin || !admin.is_admin) {
+      return res.status(403).json({ error: 'Not allowed (not admin).' });
+    }
+    try {
+      // Only return users that are NOT admin
+      const rows = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
+      res.json(rows);
+    } catch (err) {
+      console.log('Failed to fetch members:', err);
+      res.status(500).json({ error: 'Failed to fetch members', details: err.message });
+    }
+  });
+});
