@@ -8,6 +8,9 @@
     "dev": "nodemon index.js",
     "postinstall": "npm rebuild better-sqlite3"
   },
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -22,6 +25,8 @@
     "jsonwebtoken": "^9.0.2",
     "mailgun-js": "^0.6.7",
     "nodemailer": "^7.0.4",
+    "pg": "^8.16.3",
+    "pg-hstore": "^2.3.4",
     "recharts": "^3.0.2"
   },
   "devDependencies": {

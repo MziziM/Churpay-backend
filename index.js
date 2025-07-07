@@ -1,12 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
 const adminRoutes = require('./routes/admin');
 const path = require('path');
+const { getDatabase } = require('./config/database');
+const { setupDatabase } = require('./config/schema');
+const dataService = require('./services/dataService');
 
 const app = express();
 
@@ -37,29 +39,13 @@ app.use(express.json({ limit: '50mb' })); // Increased limit for large payloads
 app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data with increased limit
 
 // --- DB SETUP ---
-let db;
-try {
-  // Check if we're running on Render
-  const isRenderEnvironment = process.env.RENDER === 'true';
-  
-  // Use in-memory database on Render to avoid filesystem issues
-  const dbPath = isRenderEnvironment 
-    ? ':memory:' 
-    : (process.env.DB_PATH || './churpay.db');
-  
-  db = new Database(dbPath);
-  
-  console.log(`Connected to ChurPay SQLite database (${isRenderEnvironment ? 'in-memory mode' : 'file mode'})`);
-  
-  // If using in-memory database, we need to initialize it with our schema every time
-  if (isRenderEnvironment) {
-    console.log('Running in Render environment with in-memory database. Note: Data will be lost on service restart.');
-  }
-} catch (err) {
-  console.error('Failed to connect to SQLite database:', err.message);
-  console.error('Stack trace:', err.stack);
+// Database setup is now handled in the config/database.js file
+// This will automatically choose between SQLite and PostgreSQL based on the environment
+// Initialize database schema
+setupDatabase().catch(err => {
+  console.error('Failed to set up database schema:', err);
   process.exit(1);
-}
+});
 
 // --- CREATE TABLES ---
 db.prepare(`CREATE TABLE IF NOT EXISTS users (
@@ -154,13 +140,31 @@ app.post('/api/register', async (req, res) => {
   } else {
     return res.status(400).json({ message: 'Invalid role.' });
   }
+  
   try {
+    // Check if email already exists
+    const existingUser = await dataService.findOne('users', { email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already exists.' });
+    }
+    
     const hashedPassword = await bcrypt.hash(password, 10);
-    const stmt = db.prepare('INSERT INTO users (church_name, email, password) VALUES (?, ?, ?)');
-    const info = stmt.run(finalChurchName, email, hashedPassword);
-    res.status(201).json({ message: 'Registration successful!', user_id: info.lastInsertRowid });
+    
+    const userData = {
+      church_name: finalChurchName,
+      email,
+      password: hashedPassword
+    };
+    
+    const result = await dataService.insert('users', userData);
+    const userId = result.id || result.lastInsertRowid;
+    
+    res.status(201).json({ message: 'Registration successful!', user_id: userId });
   } catch (err) {
-    if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
+    console.error('Registration error:', err);
+    if (err.message && err.message.includes('duplicate') || err.message.includes('UNIQUE')) {
+      return res.status(400).json({ message: 'Email already exists.' });
+    }
     res.status(500).json({ message: 'Database error.', error: err.message });
   }
 });
@@ -170,14 +174,17 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ message: 'All fields required.' });
   try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const users = await dataService.query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = users.length ? users[0] : null;
     if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
     if (user.suspended) return res.status(403).json({ message: 'Account suspended.' });
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(400).json({ message: 'Invalid credentials.' });
+    const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_123';
     const token = jwt.sign({ user_id: user.id, church_name: user.church_name, is_admin: user.is_admin }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ message: 'Login successful!', token, church_name: user.church_name });
   } catch (err) {
+    console.error('Login error:', err);
     res.status(500).json({ message: 'Server error.', error: err.message });
   }
 });
@@ -204,12 +211,30 @@ app.post('/api/admin-register', async (req, res) => {
     return res.status(400).json({ message: 'All fields are required.' });
   }
   try {
+    // Check if admin email already exists
+    const existingUser = await dataService.findOne('users', { email: admin_email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already exists.' });
+    }
+    
     const hashedPassword = await bcrypt.hash(password, 10);
-    const stmt = db.prepare('INSERT INTO users (church_name, email, password, is_admin) VALUES (?, ?, ?, 1)');
-    const info = stmt.run(admin_name, admin_email, hashedPassword);
-    res.status(201).json({ message: 'Admin registration successful!', user_id: info.lastInsertRowid });
+    
+    const userData = {
+      church_name: admin_name,
+      email: admin_email,
+      password: hashedPassword,
+      is_admin: 1
+    };
+    
+    const result = await dataService.insert('users', userData);
+    const userId = result.id || result.lastInsertRowid;
+    
+    res.status(201).json({ message: 'Admin registration successful!', user_id: userId });
   } catch (err) {
-    if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
+    console.error('Admin registration error:', err);
+    if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE'))) {
+      return res.status(400).json({ message: 'Email already exists.' });
+    }
     res.status(500).json({ message: 'Database error.', error: err.message });
   }
 });
@@ -219,7 +244,8 @@ app.post('/api/admin-login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ message: 'All fields required.' });
   try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ? AND is_admin = 1').get(email);
+    const users = await dataService.query('SELECT * FROM users WHERE email = $1 AND is_admin = 1', [email]);
+    const user = users.length ? users[0] : null;
     if (!user) return res.status(400).json({ message: 'Invalid credentials or not an admin.' });
     if (user.suspended) return res.status(403).json({ message: 'Account suspended.' });
     const valid = await bcrypt.compare(password, user.password);
