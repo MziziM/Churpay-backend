@@ -50,6 +50,17 @@ db.prepare(`CREATE TABLE IF NOT EXISTS users (
   suspended INTEGER DEFAULT 0
 )`).run();
 
+db.prepare(`CREATE TABLE IF NOT EXISTS members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL,
+  church_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(church_id) REFERENCES users(id)
+)`).run();
+
 db.prepare(`CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -58,6 +69,28 @@ db.prepare(`CREATE TABLE IF NOT EXISTS transactions (
   amount TEXT NOT NULL,
   status TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id)
+)`).run();
+
+db.prepare(`CREATE TABLE IF NOT EXISTS member_settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER NOT NULL,
+  goal REAL DEFAULT 5000,
+  recurring_enabled INTEGER DEFAULT 0,
+  recurring_type TEXT DEFAULT 'Tithe',
+  recurring_amount REAL DEFAULT 500,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(member_id) REFERENCES members(id)
+)`).run();
+
+db.prepare(`CREATE TABLE IF NOT EXISTS donations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER NOT NULL,
+  project_id INTEGER,
+  amount REAL NOT NULL,
+  date TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(member_id) REFERENCES members(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
 )`).run();
 
 db.prepare(`CREATE TABLE IF NOT EXISTS projects (
@@ -488,5 +521,243 @@ app.get('/api/admin/projects', requireAdmin, (req, res) => {
   } catch (err) {
     console.log('Failed to fetch projects:', err);
     res.status(500).json({ error: 'Failed to fetch projects', details: err.message });
+  }
+});
+
+// --- MEMBER MIDDLEWARE: Require Member Authentication ---
+function requireMember(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'No authorization header provided.' });
+
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2) return res.status(401).json({ error: 'Invalid authorization format.' });
+  if (parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid authorization scheme.' });
+
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      console.log('JWT error:', err);
+      return res.status(403).json({ error: 'Invalid token.' });
+    }
+    req.user = user; // Attach user info to request
+    next();
+  });
+}
+
+// --- MEMBER: Get Dashboard Data ---
+app.get('/api/member/dashboard', requireMember, (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    
+    // Get member info
+    const member = db.prepare(`
+      SELECT id, name, email, church_id 
+      FROM members 
+      WHERE id = ?
+    `).get(userId);
+    
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    
+    // Get church info
+    const church = member.church_id ? db.prepare(`
+      SELECT church_name
+      FROM users 
+      WHERE id = ?
+    `).get(member.church_id) : null;
+    
+    // Get donations
+    const donations = db.prepare(`
+      SELECT d.id, d.amount, d.date, p.title as project
+      FROM donations d
+      LEFT JOIN projects p ON d.project_id = p.id
+      WHERE d.member_id = ?
+      ORDER BY d.date DESC
+    `).all(userId);
+    
+    // Calculate statistics
+    const donationStats = db.prepare(`
+      SELECT SUM(amount) as totalGiven, COUNT(*) as transactions
+      FROM donations
+      WHERE member_id = ?
+    `).get(userId);
+    
+    // Get member profile settings
+    const memberSettings = db.prepare(`
+      SELECT goal, 
+             recurring_enabled as "recurring.enabled", 
+             recurring_type as "recurring.type", 
+             recurring_amount as "recurring.amount"
+      FROM member_settings
+      WHERE member_id = ?
+    `).get(userId);
+    
+    // Default settings if none exist
+    const settings = memberSettings || {
+      goal: 5000,
+      recurring: {
+        enabled: false,
+        type: "Tithe",
+        amount: 500
+      }
+    };
+    
+    // Get badges (based on donation history)
+    const badges = {
+      firstGift: donations.length > 0,
+      r1000Club: donationStats.totalGiven >= 1000,
+      r5000Club: donationStats.totalGiven >= 5000,
+      consistentGiver: donations.length >= 3,
+      bigGift: donations.some(d => d.amount >= 1000)
+    };
+    
+    // Calculate impact statistics (simplified example)
+    const churchesHelped = db.prepare(`
+      SELECT COUNT(DISTINCT p.church_id) as count
+      FROM donations d
+      JOIN projects p ON d.project_id = p.id
+      WHERE d.member_id = ?
+    `).get(userId).count;
+    
+    const projectsFunded = db.prepare(`
+      SELECT COUNT(DISTINCT project_id) as count
+      FROM donations
+      WHERE member_id = ?
+    `).get(userId).count;
+    
+    // Monthly trend (last 6 months)
+    const monthlyTrend = []; 
+    for (let i = 5; i >= 0; i--) {
+      const date = new Date();
+      date.setMonth(date.getMonth() - i);
+      const month = date.getMonth() + 1;
+      const year = date.getFullYear();
+      
+      const monthTotal = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM donations
+        WHERE member_id = ? 
+        AND strftime('%m', date) = ? 
+        AND strftime('%Y', date) = ?
+      `).get(userId, month.toString().padStart(2, '0'), year.toString()).total;
+      
+      monthlyTrend.push(monthTotal);
+    }
+    
+    // Combine all data
+    const responseData = {
+      donations,
+      stats: {
+        totalGiven: donationStats.totalGiven || 0,
+        transactions: donationStats.transactions || 0,
+        activeGivers: '-', // Not relevant for individual member
+        churchesHelped,
+        projectsFunded,
+        kidsSponsored: Math.floor(donationStats.totalGiven / 200) || 0, // Simplified calculation
+        mealsProvided: Math.floor(donationStats.totalGiven / 50) || 0,  // Simplified calculation
+        badges,
+        goal: settings.goal,
+        recurring: settings.recurring,
+        monthlyTrend,
+        memberName: member.name || 'Member',
+        memberAccountNumber: userId + 1000000,
+        churchName: church ? church.church_name : 'No church linked'
+      }
+    };
+    
+    res.json(responseData);
+  } catch (err) {
+    console.error('Failed to fetch member dashboard:', err);
+    res.status(500).json({ error: 'Failed to fetch dashboard data', details: err.message });
+  }
+});
+
+// --- MEMBER: Update Goal ---
+app.post('/api/member/goal', requireMember, (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    const { goal } = req.body;
+    
+    if (!goal || isNaN(goal) || goal <= 0) {
+      return res.status(400).json({ error: 'Invalid goal amount' });
+    }
+    
+    // Check if settings exist
+    const existingSettings = db.prepare(`
+      SELECT id FROM member_settings WHERE member_id = ?
+    `).get(userId);
+    
+    if (existingSettings) {
+      // Update existing settings
+      db.prepare(`
+        UPDATE member_settings 
+        SET goal = ? 
+        WHERE member_id = ?
+      `).run(goal, userId);
+    } else {
+      // Create new settings
+      db.prepare(`
+        INSERT INTO member_settings (member_id, goal)
+        VALUES (?, ?)
+      `).run(userId, goal);
+    }
+    
+    res.json({ success: true, goal });
+  } catch (err) {
+    console.error('Failed to update member goal:', err);
+    res.status(500).json({ error: 'Failed to update goal', details: err.message });
+  }
+});
+
+// --- MEMBER: Update Recurring Settings ---
+app.post('/api/member/recurring', requireMember, (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    const { enabled, type, amount } = req.body;
+    
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Invalid enabled status' });
+    }
+    
+    if (enabled) {
+      if (!type || !amount || isNaN(amount) || amount <= 0) {
+        return res.status(400).json({ error: 'Invalid recurring settings' });
+      }
+    }
+    
+    // Check if settings exist
+    const existingSettings = db.prepare(`
+      SELECT id FROM member_settings WHERE member_id = ?
+    `).get(userId);
+    
+    if (existingSettings) {
+      // Update existing settings
+      db.prepare(`
+        UPDATE member_settings 
+        SET recurring_enabled = ?,
+            recurring_type = ?,
+            recurring_amount = ?
+        WHERE member_id = ?
+      `).run(enabled ? 1 : 0, type, amount, userId);
+    } else {
+      // Create new settings
+      db.prepare(`
+        INSERT INTO member_settings (
+          member_id, recurring_enabled, recurring_type, recurring_amount
+        )
+        VALUES (?, ?, ?, ?)
+      `).run(userId, enabled ? 1 : 0, type, amount);
+    }
+    
+    res.json({ 
+      success: true, 
+      recurring: { enabled, type, amount } 
+    });
+  } catch (err) {
+    console.error('Failed to update recurring settings:', err);
+    res.status(500).json({ error: 'Failed to update recurring settings', details: err.message });
   }
 });
