@@ -271,7 +271,7 @@ const server = app.listen(PORT)
   });
 
 // --- Admin: Dashboard stats ---
-app.get('/api/admin/stats', (req, res) => {
+app.get('/api/admin/stats', async (req, res) => {
   const authHeader = req.headers['authorization'];
   if (!authHeader) {
     console.log('Missing Authorization header');
@@ -288,161 +288,180 @@ app.get('/api/admin/stats', (req, res) => {
     return res.status(401).json({ error: 'No token provided (after Bearer).' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('JWT error:', err);
-      return res.status(403).json({ error: 'Invalid token.' });
-    }
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
     console.log('Decoded user:', user);
 
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) {
       console.log('User not admin or not found:', user.user_id, admin);
       return res.status(403).json({ error: 'Not allowed (not admin).' });
     }
-    try {
-      // Check if required tables exist
-      const usersTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
-      const transactionsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'").get();
-      if (!usersTable) {
+
+    // Get database type to determine which checks to run
+    const dbInfo = getDatabase();
+    const isSQLite = dbInfo.type === 'sqlite';
+
+    // For SQLite, check if tables exist
+    if (isSQLite) {
+      // These checks are SQLite specific and can be skipped in PostgreSQL
+      const tablesCheck = await dataService.query("SELECT name FROM sqlite_master WHERE type='table' AND (name='users' OR name='transactions')");
+      
+      const tableNames = tablesCheck.map(t => t.name);
+      if (!tableNames.includes('users')) {
         console.error('Users table does not exist!');
         return res.status(500).json({ error: 'Database error: users table does not exist.' });
       }
-      if (!transactionsTable) {
+      if (!tableNames.includes('transactions')) {
         console.error('Transactions table does not exist!');
         return res.status(500).json({ error: 'Database error: transactions table does not exist.' });
       }
-      // Check for required columns in users
-      const userColumns = db.prepare("PRAGMA table_info(users)").all().map(col => col.name);
-      const requiredUserCols = ['id', 'church_name', 'email', 'password', 'is_admin', 'suspended'];
-      for (const col of requiredUserCols) {
-        if (!userColumns.includes(col)) {
-          console.error(`Missing column '${col}' in users table!`);
-          return res.status(500).json({ error: `Database error: missing column '${col}' in users table.` });
-        }
-      }
-      // Check for required columns in transactions
-      const txColumns = db.prepare("PRAGMA table_info(transactions)").all().map(col => col.name);
-      const requiredTxCols = ['id', 'user_id', 'date', 'name', 'amount', 'status'];
-      for (const col of requiredTxCols) {
-        if (!txColumns.includes(col)) {
-          console.error(`Missing column '${col}' in transactions table!`);
-          return res.status(500).json({ error: `Database error: missing column '${col}' in transactions table.` });
-        }
-      }
-      // All checks passed, run queries
-      let churches = 0, members = 0, totalTransactions = 0, totalRevenueRow = { sum: 0 }, totalRevenue = 0;
-      try {
-        churches = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
-      } catch (e) {
-        console.error('Error counting churches:', e);
-        return res.status(500).json({ error: 'Error counting churches', details: e.message });
-      }
-      try {
-        members = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_admin = 0').get().count;
-      } catch (e) {
-        console.error('Error counting members:', e);
-        return res.status(500).json({ error: 'Error counting members', details: e.message });
-      }
-      try {
-        totalTransactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
-      } catch (e) {
-        console.error('Error counting transactions:', e);
-        return res.status(500).json({ error: 'Error counting transactions', details: e.message });
-      }
-      try {
-        totalRevenueRow = db.prepare("SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = 'Success'").get();
-        totalRevenue = totalRevenueRow && totalRevenueRow.sum ? totalRevenueRow.sum : 0;
-      } catch (e) {
-        console.error('Error calculating total revenue:', e);
-        return res.status(500).json({ error: 'Error calculating total revenue', details: e.message });
-      }
-      console.log('STATS DEBUG:', { churches, members, totalTransactions, totalRevenueRow });
-      res.json({
-        churches,
-        members,
-        totalTransactions,
-        totalRevenue
-      });
-    } catch (err) {
-      console.log('Stats error (detailed):', err, err.stack);
-      res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message, stack: err.stack });
     }
-  });
+    
+    // All checks passed, run queries for stats
+    let churches = 0, members = 0, totalTransactions = 0, totalRevenue = 0;
+    
+    try {
+      // Get churches count
+      const churchesResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+      churches = churchesResult[0].count;
+    } catch (e) {
+      console.error('Error counting churches:', e);
+      return res.status(500).json({ error: 'Error counting churches', details: e.message });
+    }
+    
+    try {
+      // Get members count - in this case same as churches
+      const membersResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+      members = membersResult[0].count;
+    } catch (e) {
+      console.error('Error counting members:', e);
+      return res.status(500).json({ error: 'Error counting members', details: e.message });
+    }
+    
+    try {
+      // Get total transactions count
+      const txResult = await dataService.query('SELECT COUNT(*) as count FROM transactions');
+      totalTransactions = txResult[0].count;
+    } catch (e) {
+      console.error('Error counting transactions:', e);
+      return res.status(500).json({ error: 'Error counting transactions', details: e.message });
+    }
+    
+    try {
+      // Get total revenue
+      const revenueResult = await dataService.query("SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = 'Success'");
+      totalRevenue = revenueResult[0] && revenueResult[0].sum ? revenueResult[0].sum : 0;
+    } catch (e) {
+      console.error('Error calculating total revenue:', e);
+      return res.status(500).json({ error: 'Error calculating total revenue', details: e.message });
+    }
+    
+    console.log('STATS DEBUG:', { churches, members, totalTransactions, totalRevenue });
+    res.json({
+      churches,
+      members,
+      totalTransactions,
+      totalRevenue
+    });
+  } catch (err) {
+    console.log('Stats error (detailed):', err, err.stack);
+    res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message, stack: err.stack });
+  }
 });
        
 // --- GET: All Transactions (for frontend GET request) ---
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', async (req, res) => {
   try {
-    const transactions = db.prepare('SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT 100').all();
+    const transactions = await dataService.query('SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT 100');
     res.json(transactions);
   } catch (err) {
+    console.error('Error fetching transactions:', err);
     res.status(500).json({ error: 'Failed to fetch transactions', details: err.message });
   }
 });
 
 // --- ADMIN: GET ALL PAYOUT REQUESTS ---
-app.get('/api/admin/payout-requests', requireAdmin, (req, res) => {
+app.get('/api/admin/payout-requests', requireAdmin, async (req, res) => {
   try {
-    const requests = db.prepare(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`).all();
+    const requests = await dataService.query(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`);
     res.json(requests);
   } catch (err) {
+    console.error('Error fetching payout requests:', err);
     res.status(500).json({ error: 'Failed to fetch payout requests', details: err.message });
   }
 });
 
 // --- ADMIN: APPROVE/DENY PAYOUT REQUEST ---
-app.post('/api/admin/payout-requests/:id/action', (req, res) => {
+app.post('/api/admin/payout-requests/:id/action', async (req, res) => {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
   const parts = authHeader.split(' ');
   if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid token.' });
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+  
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    
     const payoutId = req.params.id;
     const { action } = req.body;
     if (!['approve', 'deny'].includes(action)) {
       return res.status(400).json({ error: 'Invalid action. Must be approve or deny.' });
     }
-    try {
-      // Check if payout request exists and is pending
-      const payout = db.prepare('SELECT * FROM payout_requests WHERE id = ?').get(payoutId);
-      if (!payout) return res.status(404).json({ error: 'Payout request not found.' });
-      if (payout.status !== 'pending') return res.status(400).json({ error: 'Payout request already processed.' });
-      // Update status
-      const newStatus = action === 'approve' ? 'approved' : 'denied';
-      db.prepare('UPDATE payout_requests SET status = ? WHERE id = ?').run(newStatus, payoutId);
-      // Optionally: send notification email here
-      res.json({ message: `Payout request ${action}d successfully.` });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to process payout request', details: err.message });
-    }
-  });
+    
+    // Check if payout request exists and is pending
+    const payoutRequests = await dataService.query('SELECT * FROM payout_requests WHERE id = $1', [payoutId]);
+    const payout = payoutRequests.length ? payoutRequests[0] : null;
+    
+    if (!payout) return res.status(404).json({ error: 'Payout request not found.' });
+    if (payout.status !== 'pending') return res.status(400).json({ error: 'Payout request already processed.' });
+    
+    // Update status
+    const newStatus = action === 'approve' ? 'approved' : 'denied';
+    await dataService.query('UPDATE payout_requests SET status = $1 WHERE id = $2', [newStatus, payoutId]);
+    
+    // Optionally: send notification email here
+    res.json({ message: `Payout request ${action}d successfully.` });
+  } catch (err) {
+    console.error('Error processing payout request:', err);
+    res.status(500).json({ error: 'Failed to process payout request', details: err.message });
+  }
 });
 
 // --- ADMIN: GET ALL CHURCHES ---
-app.get('/api/admin/churches', (req, res) => {
+app.get('/api/admin/churches', async (req, res) => {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
   const parts = authHeader.split(' ');
   if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid token.' });
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+  
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
-    try {
-      const churches = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
-      res.json(churches);
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch churches', details: err.message });
-    }
-  });
+    
+    const churches = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
+    res.json(churches);
+  } catch (err) {
+    console.error('Error fetching churches:', err);
+    res.status(500).json({ error: 'Failed to fetch churches', details: err.message });
+  }
 });
 
 // --- ADMIN: ADD MEMBER ---
@@ -453,28 +472,51 @@ app.post('/api/admin/members', async (req, res) => {
   if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  jwt.verify(token, JWT_SECRET, async (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid token.' });
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+  
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
+    
     const { name, email, password, role } = req.body;
     if (!name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
-    try {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const isAdmin = role === 'admin' ? 1 : 0;
-      const stmt = db.prepare('INSERT INTO users (church_name, email, password, is_admin) VALUES (?, ?, ?, ?)');
-      const info = stmt.run(name, email, hashedPassword, isAdmin);
-      res.status(201).json({ message: 'Member added successfully!', user_id: info.lastInsertRowid });
-    } catch (err) {
-      if (err.message.includes('UNIQUE')) return res.status(400).json({ message: 'Email already exists.' });
-      res.status(500).json({ message: 'Database error.', error: err.message });
+    
+    // Check if email already exists
+    const existingUser = await dataService.findOne('users', { email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already exists.' });
     }
-  });
+    
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const isAdmin = role === 'admin' ? 1 : 0;
+    
+    const userData = {
+      church_name: name,
+      email,
+      password: hashedPassword,
+      is_admin: isAdmin
+    };
+    
+    const result = await dataService.insert('users', userData);
+    const userId = result.id || result.lastInsertRowid;
+    
+    res.status(201).json({ message: 'Member added successfully!', user_id: userId });
+  } catch (err) {
+    console.error('Error adding member:', err);
+    if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE'))) {
+      return res.status(400).json({ message: 'Email already exists.' });
+    }
+    res.status(500).json({ message: 'Database error.', error: err.message });
+  }
 });
 
 
 // --- GET ALL MEMBERS (for admin) ---
-app.get('/api/admin/members', (req, res) => {
+app.get('/api/admin/members', async (req, res) => {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
   const parts = authHeader.split(' ');
@@ -482,28 +524,28 @@ app.get('/api/admin/members', (req, res) => {
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('JWT error:', err);
-      return res.status(403).json({ error: 'Invalid token.' });
-    }
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) {
       return res.status(403).json({ error: 'Not allowed (not admin).' });
     }
-    try {
-      // Only return users that are NOT admin
-      const rows = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
-      res.json(rows);
-    } catch (err) {
-      console.log('Failed to fetch members:', err);
-      res.status(500).json({ error: 'Failed to fetch members', details: err.message });
-    }
-  });
+    
+    // Only return users that are NOT admin
+    const rows = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
+    res.json(rows);
+  } catch (err) {
+    console.log('Failed to fetch members:', err);
+    res.status(500).json({ error: 'Failed to fetch members', details: err.message });
+  }
 });
 
 // Middleware to require admin role
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   const authHeader = req.headers['authorization'];
   if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
   const parts = authHeader.split(' ');
@@ -511,24 +553,29 @@ function requireAdmin(req, res, next) {
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('JWT error:', err);
-      return res.status(403).json({ error: 'Invalid token.' });
-    }
-    const admin = db.prepare('SELECT is_admin FROM users WHERE id = ?').get(user.user_id);
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
+    const admin = adminUsers.length ? adminUsers[0] : null;
+    
     if (!admin || !admin.is_admin) {
       return res.status(403).json({ error: 'Not allowed (not admin).' });
     }
+    
     req.adminUser = user; // Attach user info to request
     next();
-  });
+  } catch (err) {
+    console.log('JWT error:', err);
+    return res.status(403).json({ error: 'Invalid token.' });
+  }
 }
 
 // Usage example with the requireAdmin middleware
-app.get('/api/admin/members', requireAdmin, (req, res) => {
+app.get('/api/admin/members-alt', requireAdmin, async (req, res) => {
   try {
-    const rows = db.prepare('SELECT id, church_name, email FROM users WHERE is_admin = 0').all();
+    const rows = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
     res.json(rows);
   } catch (err) {
     console.log('Failed to fetch members:', err);
@@ -537,14 +584,14 @@ app.get('/api/admin/members', requireAdmin, (req, res) => {
 });
 
 // --- ADMIN: GET ALL PROJECTS ---
-app.get('/api/admin/projects', requireAdmin, (req, res) => {
+app.get('/api/admin/projects', requireAdmin, async (req, res) => {
   try {
-    const projects = db.prepare(`
+    const projects = await dataService.query(`
       SELECT p.*, u.church_name 
       FROM projects p 
       LEFT JOIN users u ON p.church_id = u.id 
       ORDER BY p.created_at DESC, p.id DESC
-    `).all();
+    `);
     res.json(projects);
   } catch (err) {
     console.log('Failed to fetch projects:', err);
@@ -564,64 +611,75 @@ function requireMember(req, res, next) {
   const token = parts[1];
   if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('JWT error:', err);
-      return res.status(403).json({ error: 'Invalid token.' });
-    }
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
     req.user = user; // Attach user info to request
     next();
-  });
+  } catch (err) {
+    console.log('JWT error:', err);
+    return res.status(403).json({ error: 'Invalid token.' });
+  }
 }
 
 // --- MEMBER: Get Dashboard Data ---
-app.get('/api/member/dashboard', requireMember, (req, res) => {
+app.get('/api/member/dashboard', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     
     // Get member info
-    const member = db.prepare(`
+    const memberResults = await dataService.query(`
       SELECT id, name, email, church_id 
       FROM members 
-      WHERE id = ?
-    `).get(userId);
+      WHERE id = $1
+    `, [userId]);
+    
+    const member = memberResults.length ? memberResults[0] : null;
     
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
     
     // Get church info
-    const church = member.church_id ? db.prepare(`
-      SELECT church_name
-      FROM users 
-      WHERE id = ?
-    `).get(member.church_id) : null;
+    let church = null;
+    if (member.church_id) {
+      const churchResults = await dataService.query(`
+        SELECT church_name
+        FROM users 
+        WHERE id = $1
+      `, [member.church_id]);
+      
+      church = churchResults.length ? churchResults[0] : null;
+    }
     
     // Get donations
-    const donations = db.prepare(`
+    const donations = await dataService.query(`
       SELECT d.id, d.amount, d.date, p.title as project
       FROM donations d
       LEFT JOIN projects p ON d.project_id = p.id
-      WHERE d.member_id = ?
+      WHERE d.member_id = $1
       ORDER BY d.date DESC
-    `).all(userId);
+    `, [userId]);
     
     // Calculate statistics
-    const donationStats = db.prepare(`
-      SELECT SUM(amount) as totalGiven, COUNT(*) as transactions
+    const donationStatsResults = await dataService.query(`
+      SELECT SUM(amount) as "totalGiven", COUNT(*) as transactions
       FROM donations
-      WHERE member_id = ?
-    `).get(userId);
+      WHERE member_id = $1
+    `, [userId]);
+    
+    const donationStats = donationStatsResults.length ? donationStatsResults[0] : { totalGiven: 0, transactions: 0 };
     
     // Get member profile settings
-    const memberSettings = db.prepare(`
+    const memberSettingsResults = await dataService.query(`
       SELECT goal, 
              recurring_enabled as "recurring.enabled", 
              recurring_type as "recurring.type", 
              recurring_amount as "recurring.amount"
       FROM member_settings
-      WHERE member_id = ?
-    `).get(userId);
+      WHERE member_id = $1
+    `, [userId]);
+    
+    const memberSettings = memberSettingsResults.length ? memberSettingsResults[0] : null;
     
     // Default settings if none exist
     const settings = memberSettings || {
@@ -643,18 +701,22 @@ app.get('/api/member/dashboard', requireMember, (req, res) => {
     };
     
     // Calculate impact statistics (simplified example)
-    const churchesHelped = db.prepare(`
+    const churchesHelpedResults = await dataService.query(`
       SELECT COUNT(DISTINCT p.church_id) as count
       FROM donations d
       JOIN projects p ON d.project_id = p.id
-      WHERE d.member_id = ?
-    `).get(userId).count;
+      WHERE d.member_id = $1
+    `, [userId]);
     
-    const projectsFunded = db.prepare(`
+    const churchesHelped = churchesHelpedResults.length ? churchesHelpedResults[0].count : 0;
+    
+    const projectsFundedResults = await dataService.query(`
       SELECT COUNT(DISTINCT project_id) as count
       FROM donations
-      WHERE member_id = ?
-    `).get(userId).count;
+      WHERE member_id = $1
+    `, [userId]);
+    
+    const projectsFunded = projectsFundedResults.length ? projectsFundedResults[0].count : 0;
     
     // Monthly trend (last 6 months)
     const monthlyTrend = []; 
@@ -664,14 +726,33 @@ app.get('/api/member/dashboard', requireMember, (req, res) => {
       const month = date.getMonth() + 1;
       const year = date.getFullYear();
       
-      const monthTotal = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM donations
-        WHERE member_id = ? 
-        AND strftime('%m', date) = ? 
-        AND strftime('%Y', date) = ?
-      `).get(userId, month.toString().padStart(2, '0'), year.toString()).total;
+      // Adapt the date format extraction for PostgreSQL compatibility
+      let dateFormat;
+      const dbInfo = getDatabase();
+      if (dbInfo.type === 'postgres') {
+        dateFormat = `
+          SELECT COALESCE(SUM(amount), 0) as total
+          FROM donations
+          WHERE member_id = $1 
+          AND EXTRACT(MONTH FROM date) = $2 
+          AND EXTRACT(YEAR FROM date) = $3
+        `;
+      } else {
+        dateFormat = `
+          SELECT COALESCE(SUM(amount), 0) as total
+          FROM donations
+          WHERE member_id = $1 
+          AND strftime('%m', date) = $2 
+          AND strftime('%Y', date) = $3
+        `;
+      }
       
+      const monthTotalResults = await dataService.query(
+        dateFormat, 
+        [userId, month.toString().padStart(2, '0'), year.toString()]
+      );
+      
+      const monthTotal = monthTotalResults.length ? monthTotalResults[0].total : 0;
       monthlyTrend.push(monthTotal);
     }
     
@@ -704,7 +785,7 @@ app.get('/api/member/dashboard', requireMember, (req, res) => {
 });
 
 // --- MEMBER: Update Goal ---
-app.post('/api/member/goal', requireMember, (req, res) => {
+app.post('/api/member/goal', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     const { goal } = req.body;
@@ -714,23 +795,25 @@ app.post('/api/member/goal', requireMember, (req, res) => {
     }
     
     // Check if settings exist
-    const existingSettings = db.prepare(`
-      SELECT id FROM member_settings WHERE member_id = ?
-    `).get(userId);
+    const existingSettingsResults = await dataService.query(`
+      SELECT id FROM member_settings WHERE member_id = $1
+    `, [userId]);
+    
+    const existingSettings = existingSettingsResults.length ? existingSettingsResults[0] : null;
     
     if (existingSettings) {
       // Update existing settings
-      db.prepare(`
+      await dataService.query(`
         UPDATE member_settings 
-        SET goal = ? 
-        WHERE member_id = ?
-      `).run(goal, userId);
+        SET goal = $1 
+        WHERE member_id = $2
+      `, [goal, userId]);
     } else {
       // Create new settings
-      db.prepare(`
-        INSERT INTO member_settings (member_id, goal)
-        VALUES (?, ?)
-      `).run(userId, goal);
+      await dataService.insert('member_settings', {
+        member_id: userId,
+        goal
+      });
     }
     
     res.json({ success: true, goal });
@@ -741,7 +824,7 @@ app.post('/api/member/goal', requireMember, (req, res) => {
 });
 
 // --- MEMBER: Update Recurring Settings ---
-app.post('/api/member/recurring', requireMember, (req, res) => {
+app.post('/api/member/recurring', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     const { enabled, type, amount } = req.body;
@@ -757,27 +840,29 @@ app.post('/api/member/recurring', requireMember, (req, res) => {
     }
     
     // Check if settings exist
-    const existingSettings = db.prepare(`
-      SELECT id FROM member_settings WHERE member_id = ?
-    `).get(userId);
+    const existingSettingsResults = await dataService.query(`
+      SELECT id FROM member_settings WHERE member_id = $1
+    `, [userId]);
+    
+    const existingSettings = existingSettingsResults.length ? existingSettingsResults[0] : null;
     
     if (existingSettings) {
       // Update existing settings
-      db.prepare(`
+      await dataService.query(`
         UPDATE member_settings 
-        SET recurring_enabled = ?,
-            recurring_type = ?,
-            recurring_amount = ?
-        WHERE member_id = ?
-      `).run(enabled ? 1 : 0, type, amount, userId);
+        SET recurring_enabled = $1,
+            recurring_type = $2,
+            recurring_amount = $3
+        WHERE member_id = $4
+      `, [enabled ? 1 : 0, type, amount, userId]);
     } else {
       // Create new settings
-      db.prepare(`
-        INSERT INTO member_settings (
-          member_id, recurring_enabled, recurring_type, recurring_amount
-        )
-        VALUES (?, ?, ?, ?)
-      `).run(userId, enabled ? 1 : 0, type, amount);
+      await dataService.insert('member_settings', {
+        member_id: userId,
+        recurring_enabled: enabled ? 1 : 0,
+        recurring_type: type,
+        recurring_amount: amount
+      });
     }
     
     res.json({ 
