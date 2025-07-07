@@ -8,9 +8,10 @@ async function setupDatabase() {
   
   if (db.type === 'postgres') {
     // PostgreSQL schema setup
-    const client = await db.pg.connect();
+    let client;
     
     try {
+      client = await db.pg.connect();
       await client.query('BEGIN');
       
       // Users table
@@ -109,8 +110,93 @@ async function setupDatabase() {
     } finally {
       client.release();
     }
+  } else {
+    // SQLite setup - create tables if they don't exist
+    console.log('Setting up SQLite database tables...');
+    try {
+      // The db.prepare function will now come from our compatibility layer
+      // Instead of directly creating tables here, we'll use the dataService
+      const tables = [
+        `CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          church_name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          password TEXT NOT NULL,
+          is_admin INTEGER DEFAULT 0,
+          suspended INTEGER DEFAULT 0
+        )`,
+        `CREATE TABLE IF NOT EXISTS churches (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT,
+          address TEXT,
+          logo_url TEXT,
+          verified INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`,
+        `CREATE TABLE IF NOT EXISTS members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          password TEXT NOT NULL,
+          church_id INTEGER,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (church_id) REFERENCES churches(id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          description TEXT,
+          goal_amount NUMERIC NOT NULL,
+          current_amount NUMERIC DEFAULT 0,
+          church_id INTEGER,
+          image_url TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          end_date TIMESTAMP,
+          FOREIGN KEY (church_id) REFERENCES churches(id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS transactions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          amount NUMERIC NOT NULL,
+          type TEXT NOT NULL,
+          member_id INTEGER,
+          church_id INTEGER,
+          project_id INTEGER,
+          reference TEXT,
+          name TEXT,
+          surname TEXT,
+          receipt_url TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (member_id) REFERENCES members(id),
+          FOREIGN KEY (church_id) REFERENCES churches(id),
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+        )`
+      ];
+      
+      // Execute each table creation query using dataService
+      for (const query of tables) {
+        await db.sqlite.exec(query);
+      }
+      
+      // Check if admin user exists, if not create one
+      const adminStmt = db.sqlite.prepare("SELECT * FROM users WHERE email = ? AND is_admin = 1");
+      const admin = adminStmt.get('admin@churpay.com');
+      if (!admin) {
+        // Default admin password is 'admin123' - change in production!
+        db.sqlite.prepare(`
+          INSERT INTO users (church_name, email, password, is_admin)
+          VALUES ('ChurPay Admin', 'admin@churpay.com', '$2a$10$mLK.rrdlvx9DCFb6Eck1t.TlltnGulepXnov3bBp5T.JwJ1p5kLry', 1)
+        `).run();
+        console.log('Admin user created in SQLite database');
+      }
+      
+      console.log('SQLite database tables created successfully');
+    } catch (err) {
+      console.error('Error setting up SQLite database tables:', err);
+      // Don't throw here, just log the error, as SQLite setup is not critical for Render deployment
+    }
   }
-  // SQLite setup stays the same since we're already creating tables in index.js
 }
 
 module.exports = {

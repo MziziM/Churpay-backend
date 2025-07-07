@@ -42,83 +42,62 @@ app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle U
 // Database setup is now handled in the config/database.js file
 // This will automatically choose between SQLite and PostgreSQL based on the environment
 // Initialize database schema
-setupDatabase().catch(err => {
-  console.error('Failed to set up database schema:', err);
-  process.exit(1);
-});
+(async function initDatabase() {
+  try {
+    console.log('Setting up database...');
+    await setupDatabase();
+    console.log('Database setup complete');
+  } catch (err) {
+    console.error('Failed to set up database schema:', err);
+    console.error('The application will continue to run, but some features may not work properly');
+    // Not exiting process to allow the app to continue even if there are DB issues
+  }
+})();
 
-// --- CREATE TABLES ---
-db.prepare(`CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  church_name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  password TEXT NOT NULL,
-  is_admin INTEGER DEFAULT 0,
-  suspended INTEGER DEFAULT 0
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS members (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  password TEXT NOT NULL,
-  church_id INTEGER,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(church_id) REFERENCES users(id)
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS transactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  date TEXT NOT NULL,
-  name TEXT NOT NULL,
-  amount TEXT NOT NULL,
-  status TEXT NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS member_settings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  member_id INTEGER NOT NULL,
-  goal REAL DEFAULT 5000,
-  recurring_enabled INTEGER DEFAULT 0,
-  recurring_type TEXT DEFAULT 'Tithe',
-  recurring_amount REAL DEFAULT 500,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(member_id) REFERENCES members(id)
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS donations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  member_id INTEGER NOT NULL,
-  project_id INTEGER,
-  amount REAL NOT NULL,
-  date TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(member_id) REFERENCES members(id),
-  FOREIGN KEY(project_id) REFERENCES projects(id)
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS projects (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  church_id INTEGER NOT NULL,
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  goal_amount REAL,
-  image_url TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(church_id) REFERENCES users(id)
-)`).run();
-
-db.prepare(`CREATE TABLE IF NOT EXISTS payout_requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  church_id INTEGER NOT NULL,
-  amount REAL NOT NULL,
-  status TEXT DEFAULT 'pending',
-  date TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(church_id) REFERENCES users(id)
-)`).run();
+// --- COMPATIBILITY LAYER ---
+// This provides backward compatibility with the SQLite code
+// while using our new database service under the hood
+const db = {
+  prepare: (sql) => {
+    // Convert SQL to use $1, $2, etc. instead of ? for PostgreSQL
+    let preparedSql = sql;
+    let paramCount = 0;
+    preparedSql = preparedSql.replace(/\?/g, () => `$${++paramCount}`);
+    
+    return {
+      run: (...params) => {
+        return dataService.query(preparedSql, params)
+          .then(result => {
+            // Mimic SQLite's run result
+            return { 
+              changes: result && result[0] ? result[0].changes || 0 : 0,
+              lastInsertRowid: result && result[0] ? result[0].lastInsertRowid || result[0].id || null : null
+            };
+          })
+          .catch(err => {
+            console.error('Error executing query:', err);
+            throw err;
+          });
+      },
+      get: (...params) => {
+        return dataService.query(preparedSql, params)
+          .then(rows => rows && rows.length ? rows[0] : undefined)
+          .catch(err => {
+            console.error('Error executing query:', err);
+            throw err;
+          });
+      },
+      all: (...params) => {
+        return dataService.query(preparedSql, params)
+          .then(rows => rows || [])
+          .catch(err => {
+            console.error('Error executing query:', err);
+            throw err;
+          });
+      }
+    };
+  }
+};
 
 const PORT = process.env.PORT || 5001; // Changed to port 5001 to avoid conflicts
 const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
@@ -190,14 +169,16 @@ app.post('/api/login', async (req, res) => {
 });
 
 // --- EXAMPLE: GET ALL TRANSACTIONS FOR LOGGED-IN USER ---
-app.post('/api/my-transactions', (req, res) => {
+app.post('/api/my-transactions', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(401).json({ message: 'No token provided.' });
   try {
     const user = jwt.verify(token, JWT_SECRET);
-    const rows = db.prepare('SELECT date, name, amount, status FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC').all(user.user_id);
+    // Use the data service instead of direct db.prepare
+    const rows = await dataService.query('SELECT date, name, amount, status FROM transactions WHERE user_id = $1 ORDER BY date DESC, id DESC', [user.user_id]);
     res.json(rows);
   } catch (err) {
+    console.error('Error fetching transactions:', err);
     res.status(403).json({ message: 'Invalid token or server error.' });
   }
 });
