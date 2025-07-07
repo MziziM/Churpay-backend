@@ -37,8 +37,29 @@ app.use(express.json({ limit: '50mb' })); // Increased limit for large payloads
 app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data with increased limit
 
 // --- DB SETUP ---
-const db = new Database(process.env.DB_PATH || './churpay.db');
-console.log('Connected to ChurPay SQLite database.');
+let db;
+try {
+  // Check if we're running on Render
+  const isRenderEnvironment = process.env.RENDER === 'true';
+  
+  // Use in-memory database on Render to avoid filesystem issues
+  const dbPath = isRenderEnvironment 
+    ? ':memory:' 
+    : (process.env.DB_PATH || './churpay.db');
+  
+  db = new Database(dbPath);
+  
+  console.log(`Connected to ChurPay SQLite database (${isRenderEnvironment ? 'in-memory mode' : 'file mode'})`);
+  
+  // If using in-memory database, we need to initialize it with our schema every time
+  if (isRenderEnvironment) {
+    console.log('Running in Render environment with in-memory database. Note: Data will be lost on service restart.');
+  }
+} catch (err) {
+  console.error('Failed to connect to SQLite database:', err.message);
+  console.error('Stack trace:', err.stack);
+  process.exit(1);
+}
 
 // --- CREATE TABLES ---
 db.prepare(`CREATE TABLE IF NOT EXISTS users (
