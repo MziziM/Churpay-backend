@@ -1,28 +1,29 @@
 const express = require('express');
+const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
-
-// Import your main router (assumes index.js exports a router)
-const router = require('./index');
+const backendApi = require('./churpay-backend/index');
 
 const app = express();
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Enable CORS
+app.use(cors());
+
+// Parse JSON bodies
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // API routes
-app.use('/api', router);
+app.use('/api', backendApi);
 
-// Serve static files from the React app (if you build frontend here)
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../build')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../build', 'index.html'));
-  });
-}
+// Static files
+app.use(express.static(path.join(__dirname, 'build')));
 
-const PORT = process.env.PORT || 5001;
+// SPA fallback - this should be after all other routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`ChurPay server running on port ${PORT}`);
 });
