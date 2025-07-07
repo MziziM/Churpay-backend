@@ -179,17 +179,38 @@ async function setupDatabase() {
         await db.sqlite.exec(query);
       }
       
-      // Check if admin user exists, if not create one
-      const adminStmt = db.sqlite.prepare("SELECT * FROM users WHERE email = ? AND is_admin = 1");
-      const admin = adminStmt.get('admin@churpay.com');
-      if (!admin) {
-        // Default admin password is 'admin123' - change in production!
-        db.sqlite.prepare(`
-          INSERT INTO users (church_name, email, password, is_admin)
-          VALUES ('ChurPay Admin', 'admin@churpay.com', '$2a$10$mLK.rrdlvx9DCFb6Eck1t.TlltnGulepXnov3bBp5T.JwJ1p5kLry', 1)
-        `).run();
-        console.log('Admin user created in SQLite database');
+      // Check if users table has the is_admin column
+      try {
+        // First check if the users table exists at all
+        const tableExists = db.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+        if (tableExists) {
+          // Check if the column exists
+          const columnInfo = db.sqlite.prepare("PRAGMA table_info(users)").all();
+          const hasIsAdminColumn = columnInfo.some(col => col.name === 'is_admin');
+          
+          if (!hasIsAdminColumn) {
+            // Add the column if it doesn't exist
+            console.log('Adding is_admin column to users table...');
+            db.sqlite.prepare("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0").run();
+          }
+        }
+        
+        // Check if admin user exists, if not create one
+        const admin = db.sqlite.prepare("SELECT * FROM users WHERE email = ?").get('admin@churpay.com');
+        if (admin) {
+          // Update to make sure admin user has is_admin=1
+          db.sqlite.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run('admin@churpay.com');
+        } else {
+          // Create admin user if it doesn't exist
+          db.sqlite.prepare(`
+            INSERT INTO users (church_name, email, password, is_admin)
+            VALUES ('ChurPay Admin', 'admin@churpay.com', '$2a$10$mLK.rrdlvx9DCFb6Eck1t.TlltnGulepXnov3bBp5T.JwJ1p5kLry', 1)
+          `).run();
+        }
+      } catch (err) {
+        console.error('Error checking or creating admin user:', err);
       }
+        console.log('Admin user created in SQLite database');
       
       console.log('SQLite database tables created successfully');
     } catch (err) {

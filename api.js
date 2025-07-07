@@ -3,21 +3,15 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
-const adminRoutes = require('./routes/admin');
 const path = require('path');
 const { getDatabase } = require('./config/database');
 const { setupDatabase } = require('./config/schema');
 const dataService = require('./services/dataService');
 
-// Create router instead of app to be mounted on the main express server
+// Create router to be mounted on the main express server
 const router = express.Router();
 
-// Note: CORS and body parsing is handled by the main server
-// We're just setting up the routes on our router here
-
 // --- DB SETUP ---
-// Database setup is now handled in the config/database.js file
-// This will automatically choose between SQLite and PostgreSQL based on the environment
 // Initialize database schema
 (async function initDatabase() {
   try {
@@ -27,7 +21,6 @@ const router = express.Router();
   } catch (err) {
     console.error('Failed to set up database schema:', err);
     console.error('The application will continue to run, but some features may not work properly');
-    // Not exiting process to allow the app to continue even if there are DB issues
   }
 })();
 
@@ -76,10 +69,9 @@ const db = {
   }
 };
 
-const PORT = process.env.PORT || 5001; // Changed to port 5001 to avoid conflicts
 const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
 
-// --- EXAMPLE: REGISTER USER/CHURCH/MEMBER ---
+// --- REGISTER USER/CHURCH/MEMBER ---
 router.post('/register', async (req, res) => {
   const { role, church_name, name, email, password } = req.body;
   let finalChurchName;
@@ -125,7 +117,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// --- EXAMPLE: LOGIN ---
+// --- LOGIN ---
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ message: 'All fields required.' });
@@ -145,7 +137,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// --- EXAMPLE: GET ALL TRANSACTIONS FOR LOGGED-IN USER ---
+// --- GET ALL TRANSACTIONS FOR LOGGED-IN USER ---
 router.post('/my-transactions', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(401).json({ message: 'No token provided.' });
@@ -215,100 +207,83 @@ router.post('/admin-login', async (req, res) => {
   }
 });
 
-// Export the router to be used by the main server application
-module.exports = router;
-
-// --- Admin: Dashboard stats ---
-router.get('/admin/stats', async (req, res) => {
+// --- MIDDLEWARE: REQUIRE ADMIN ---
+async function requireAdmin(req, res, next) {
   const authHeader = req.headers['authorization'];
-  if (!authHeader) {
-    console.log('Missing Authorization header');
-    return res.status(401).json({ error: 'No token provided (authHeader missing).' });
-  }
+  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
+  
   const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') {
-    console.log('Invalid Authorization header format:', authHeader);
+  if (parts.length !== 2 || parts[0] !== 'Bearer') 
     return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  }
+  
   const token = parts[1];
-  if (!token) {
-    console.log('No token after Bearer');
-    return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  }
+  if (!token) return res.status(401).json({ error: 'No token provided.' });
 
   try {
-    const user = jwt.verify(token, JWT_SECRET);
-    console.log('Decoded user:', user);
-
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const users = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [decoded.user_id]);
+    const admin = users.length ? users[0] : null;
     
     if (!admin || !admin.is_admin) {
-      console.log('User not admin or not found:', user.user_id, admin);
       return res.status(403).json({ error: 'Not allowed (not admin).' });
     }
+    
+    req.adminUser = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification error:', err);
+    return res.status(403).json({ error: 'Invalid token.' });
+  }
+}
 
-    // Get database type to determine which checks to run
-    const dbInfo = getDatabase();
-    const isSQLite = dbInfo.type === 'sqlite';
+// --- MIDDLEWARE: REQUIRE MEMBER ---
+async function requireMember(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'No authorization header provided.' });
 
-    // For SQLite, check if tables exist
-    if (isSQLite) {
-      // These checks are SQLite specific and can be skipped in PostgreSQL
-      const tablesCheck = await dataService.query("SELECT name FROM sqlite_master WHERE type='table' AND (name='users' OR name='transactions')");
-      
-      const tableNames = tablesCheck.map(t => t.name);
-      if (!tableNames.includes('users')) {
-        console.error('Users table does not exist!');
-        return res.status(500).json({ error: 'Database error: users table does not exist.' });
-      }
-      if (!tableNames.includes('transactions')) {
-        console.error('Transactions table does not exist!');
-        return res.status(500).json({ error: 'Database error: transactions table does not exist.' });
-      }
-    }
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') 
+    return res.status(401).json({ error: 'Invalid authorization format.' });
+
+  const token = parts[1];
+  if (!token) return res.status(401).json({ error: 'No token provided.' });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification error:', err);
+    return res.status(403).json({ error: 'Invalid token.' });
+  }
+}
+
+// --- ADMIN: Get All Transactions ---
+router.get('/transactions', async (req, res) => {
+  try {
+    const transactions = await dataService.query('SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT 100');
+    res.json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch transactions', details: err.message });
+  }
+});
+
+// --- ADMIN: GET DASHBOARD STATS ---
+router.get('/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    // Get counts and totals using data service
+    const churchesResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+    const churches = churchesResult[0].count;
     
-    // All checks passed, run queries for stats
-    let churches = 0, members = 0, totalTransactions = 0, totalRevenue = 0;
+    const membersResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+    const members = membersResult[0].count;
     
-    try {
-      // Get churches count
-      const churchesResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
-      churches = churchesResult[0].count;
-    } catch (e) {
-      console.error('Error counting churches:', e);
-      return res.status(500).json({ error: 'Error counting churches', details: e.message });
-    }
+    const transactionsResult = await dataService.query('SELECT COUNT(*) as count FROM transactions');
+    const totalTransactions = transactionsResult[0].count;
     
-    try {
-      // Get members count - in this case same as churches
-      const membersResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
-      members = membersResult[0].count;
-    } catch (e) {
-      console.error('Error counting members:', e);
-      return res.status(500).json({ error: 'Error counting members', details: e.message });
-    }
+    const revenueResult = await dataService.query('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = $1', ['Success']);
+    const totalRevenue = revenueResult[0].sum || 0;
     
-    try {
-      // Get total transactions count
-      const txResult = await dataService.query('SELECT COUNT(*) as count FROM transactions');
-      totalTransactions = txResult[0].count;
-    } catch (e) {
-      console.error('Error counting transactions:', e);
-      return res.status(500).json({ error: 'Error counting transactions', details: e.message });
-    }
-    
-    try {
-      // Get total revenue
-      const revenueResult = await dataService.query("SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = 'Success'");
-      totalRevenue = revenueResult[0] && revenueResult[0].sum ? revenueResult[0].sum : 0;
-    } catch (e) {
-      console.error('Error calculating total revenue:', e);
-      return res.status(500).json({ error: 'Error calculating total revenue', details: e.message });
-    }
-    
-    console.log('STATS DEBUG:', { churches, members, totalTransactions, totalRevenue });
     res.json({
       churches,
       members,
@@ -316,60 +291,39 @@ router.get('/admin/stats', async (req, res) => {
       totalRevenue
     });
   } catch (err) {
-    console.log('Stats error (detailed):', err, err.stack);
-    res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message, stack: err.stack });
-  }
-});
-       
-// --- GET: All Transactions (for frontend GET request) ---
-router.get('/api/transactions', async (req, res) => {
-  try {
-    const transactions = await dataService.query('SELECT * FROM transactions ORDER BY date DESC, id DESC LIMIT 100');
-    res.json(transactions);
-  } catch (err) {
-    console.error('Error fetching transactions:', err);
-    res.status(500).json({ error: 'Failed to fetch transactions', details: err.message });
+    console.error('Stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch admin stats', details: err.message });
   }
 });
 
 // --- ADMIN: GET ALL PAYOUT REQUESTS ---
-router.get('/api/admin/payout-requests', requireAdmin, async (req, res) => {
+router.get('/admin/payout-requests', requireAdmin, async (req, res) => {
   try {
-    const requests = await dataService.query(`SELECT pr.*, u.church_name FROM payout_requests pr LEFT JOIN users u ON pr.church_id = u.id ORDER BY pr.date DESC, pr.id DESC LIMIT 100`);
+    const requests = await dataService.query(`
+      SELECT pr.*, u.church_name 
+      FROM payout_requests pr 
+      LEFT JOIN users u ON pr.church_id = u.id 
+      ORDER BY pr.date DESC, pr.id DESC LIMIT 100
+    `);
     res.json(requests);
   } catch (err) {
-    console.error('Error fetching payout requests:', err);
     res.status(500).json({ error: 'Failed to fetch payout requests', details: err.message });
   }
 });
 
 // --- ADMIN: APPROVE/DENY PAYOUT REQUEST ---
-router.post('/api/admin/payout-requests/:id/action', async (req, res) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+router.post('/admin/payout-requests/:id/action', requireAdmin, async (req, res) => {
+  const payoutId = req.params.id;
+  const { action } = req.body;
+  
+  if (!['approve', 'deny'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid action. Must be approve or deny.' });
+  }
   
   try {
-    const user = jwt.verify(token, JWT_SECRET);
-    
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
-    
-    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
-    
-    const payoutId = req.params.id;
-    const { action } = req.body;
-    if (!['approve', 'deny'].includes(action)) {
-      return res.status(400).json({ error: 'Invalid action. Must be approve or deny.' });
-    }
-    
     // Check if payout request exists and is pending
-    const payoutRequests = await dataService.query('SELECT * FROM payout_requests WHERE id = $1', [payoutId]);
-    const payout = payoutRequests.length ? payoutRequests[0] : null;
+    const payoutResults = await dataService.query('SELECT * FROM payout_requests WHERE id = $1', [payoutId]);
+    const payout = payoutResults.length ? payoutResults[0] : null;
     
     if (!payout) return res.status(404).json({ error: 'Payout request not found.' });
     if (payout.status !== 'pending') return res.status(400).json({ error: 'Payout request already processed.' });
@@ -378,83 +332,41 @@ router.post('/api/admin/payout-requests/:id/action', async (req, res) => {
     const newStatus = action === 'approve' ? 'approved' : 'denied';
     await dataService.query('UPDATE payout_requests SET status = $1 WHERE id = $2', [newStatus, payoutId]);
     
-    // Optionally: send notification email here
     res.json({ message: `Payout request ${action}d successfully.` });
   } catch (err) {
-    console.error('Error processing payout request:', err);
     res.status(500).json({ error: 'Failed to process payout request', details: err.message });
   }
 });
 
 // --- ADMIN: GET ALL CHURCHES ---
-router.get('/api/admin/churches', async (req, res) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-  
+router.get('/admin/churches', requireAdmin, async (req, res) => {
   try {
-    const user = jwt.verify(token, JWT_SECRET);
-    
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
-    
-    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
-    
     const churches = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
     res.json(churches);
   } catch (err) {
-    console.error('Error fetching churches:', err);
     res.status(500).json({ error: 'Failed to fetch churches', details: err.message });
   }
 });
 
 // --- ADMIN: ADD MEMBER ---
-router.post('/api/admin/members', async (req, res) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
+router.post('/admin/members', requireAdmin, async (req, res) => {
+  const { name, email, password, role } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
   
   try {
-    const user = jwt.verify(token, JWT_SECRET);
-    
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
-    
-    if (!admin || !admin.is_admin) return res.status(403).json({ error: 'Not allowed (not admin).' });
-    
-    const { name, email, password, role } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
-    
-    // Check if email already exists
-    const existingUser = await dataService.findOne('users', { email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already exists.' });
-    }
-    
     const hashedPassword = await bcrypt.hash(password, 10);
     const isAdmin = role === 'admin' ? 1 : 0;
     
-    const userData = {
+    const result = await dataService.insert('users', {
       church_name: name,
       email,
       password: hashedPassword,
       is_admin: isAdmin
-    };
+    });
     
-    const result = await dataService.insert('users', userData);
     const userId = result.id || result.lastInsertRowid;
-    
     res.status(201).json({ message: 'Member added successfully!', user_id: userId });
   } catch (err) {
-    console.error('Error adding member:', err);
     if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE'))) {
       return res.status(400).json({ message: 'Email already exists.' });
     }
@@ -462,77 +374,19 @@ router.post('/api/admin/members', async (req, res) => {
   }
 });
 
-
-// --- GET ALL MEMBERS (for admin) ---
-router.get('/api/admin/members', async (req, res) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-
+// --- ADMIN: GET ALL MEMBERS ---
+router.get('/admin/members', requireAdmin, async (req, res) => {
   try {
-    const user = jwt.verify(token, JWT_SECRET);
-    
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
-    
-    if (!admin || !admin.is_admin) {
-      return res.status(403).json({ error: 'Not allowed (not admin).' });
-    }
-    
-    // Only return users that are NOT admin
-    const rows = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
-    res.json(rows);
+    const members = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
+    res.json(members);
   } catch (err) {
-    console.log('Failed to fetch members:', err);
-    res.status(500).json({ error: 'Failed to fetch members', details: err.message });
-  }
-});
-
-// Middleware to require admin role
-async function requireAdmin(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided.' });
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid Authorization header format.' });
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-
-  try {
-    const user = jwt.verify(token, JWT_SECRET);
-    
-    // Check if user is admin
-    const adminUsers = await dataService.query('SELECT is_admin FROM users WHERE id = $1', [user.user_id]);
-    const admin = adminUsers.length ? adminUsers[0] : null;
-    
-    if (!admin || !admin.is_admin) {
-      return res.status(403).json({ error: 'Not allowed (not admin).' });
-    }
-    
-    req.adminUser = user; // Attach user info to request
-    next();
-  } catch (err) {
-    console.log('JWT error:', err);
-    return res.status(403).json({ error: 'Invalid token.' });
-  }
-}
-
-// Usage example with the requireAdmin middleware
-router.get('/api/admin/members-alt', requireAdmin, async (req, res) => {
-  try {
-    const rows = await dataService.query('SELECT id, church_name, email FROM users WHERE is_admin = 0');
-    res.json(rows);
-  } catch (err) {
-    console.log('Failed to fetch members:', err);
+    console.error('Failed to fetch members:', err);
     res.status(500).json({ error: 'Failed to fetch members', details: err.message });
   }
 });
 
 // --- ADMIN: GET ALL PROJECTS ---
-router.get('/api/admin/projects', requireAdmin, async (req, res) => {
+router.get('/admin/projects', requireAdmin, async (req, res) => {
   try {
     const projects = await dataService.query(`
       SELECT p.*, u.church_name 
@@ -542,35 +396,13 @@ router.get('/api/admin/projects', requireAdmin, async (req, res) => {
     `);
     res.json(projects);
   } catch (err) {
-    console.log('Failed to fetch projects:', err);
+    console.error('Failed to fetch projects:', err);
     res.status(500).json({ error: 'Failed to fetch projects', details: err.message });
   }
 });
 
-// --- MEMBER MIDDLEWARE: Require Member Authentication ---
-function requireMember(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'No authorization header provided.' });
-
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2) return res.status(401).json({ error: 'Invalid authorization format.' });
-  if (parts[0] !== 'Bearer') return res.status(401).json({ error: 'Invalid authorization scheme.' });
-
-  const token = parts[1];
-  if (!token) return res.status(401).json({ error: 'No token provided (after Bearer).' });
-
-  try {
-    const user = jwt.verify(token, JWT_SECRET);
-    req.user = user; // Attach user info to request
-    next();
-  } catch (err) {
-    console.log('JWT error:', err);
-    return res.status(403).json({ error: 'Invalid token.' });
-  }
-}
-
 // --- MEMBER: Get Dashboard Data ---
-router.get('/api/member/dashboard', requireMember, async (req, res) => {
+router.get('/member/dashboard', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     
@@ -610,12 +442,12 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
     
     // Calculate statistics
     const donationStatsResults = await dataService.query(`
-      SELECT SUM(amount) as "totalGiven", COUNT(*) as transactions
+      SELECT SUM(amount) as totalGiven, COUNT(*) as transactions
       FROM donations
       WHERE member_id = $1
     `, [userId]);
     
-    const donationStats = donationStatsResults.length ? donationStatsResults[0] : { totalGiven: 0, transactions: 0 };
+    const donationStats = donationStatsResults[0] || { totalGiven: 0, transactions: 0 };
     
     // Get member profile settings
     const memberSettingsResults = await dataService.query(`
@@ -627,10 +459,8 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
       WHERE member_id = $1
     `, [userId]);
     
-    const memberSettings = memberSettingsResults.length ? memberSettingsResults[0] : null;
-    
     // Default settings if none exist
-    const settings = memberSettings || {
+    const settings = memberSettingsResults.length ? memberSettingsResults[0] : {
       goal: 5000,
       recurring: {
         enabled: false,
@@ -648,7 +478,7 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
       bigGift: donations.some(d => d.amount >= 1000)
     };
     
-    // Calculate impact statistics (simplified example)
+    // Calculate impact statistics
     const churchesHelpedResults = await dataService.query(`
       SELECT COUNT(DISTINCT p.church_id) as count
       FROM donations d
@@ -656,7 +486,7 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
       WHERE d.member_id = $1
     `, [userId]);
     
-    const churchesHelped = churchesHelpedResults.length ? churchesHelpedResults[0].count : 0;
+    const churchesHelped = churchesHelpedResults[0].count || 0;
     
     const projectsFundedResults = await dataService.query(`
       SELECT COUNT(DISTINCT project_id) as count
@@ -664,10 +494,11 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
       WHERE member_id = $1
     `, [userId]);
     
-    const projectsFunded = projectsFundedResults.length ? projectsFundedResults[0].count : 0;
+    const projectsFunded = projectsFundedResults[0].count || 0;
     
     // Monthly trend (last 6 months)
-    const monthlyTrend = []; 
+    const monthlyTrend = [];
+    
     for (let i = 5; i >= 0; i--) {
       const date = new Date();
       date.setMonth(date.getMonth() - i);
@@ -733,7 +564,7 @@ router.get('/api/member/dashboard', requireMember, async (req, res) => {
 });
 
 // --- MEMBER: Update Goal ---
-router.post('/api/member/goal', requireMember, async (req, res) => {
+router.post('/member/goal', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     const { goal } = req.body;
@@ -772,7 +603,7 @@ router.post('/api/member/goal', requireMember, async (req, res) => {
 });
 
 // --- MEMBER: Update Recurring Settings ---
-router.post('/api/member/recurring', requireMember, async (req, res) => {
+router.post('/member/recurring', requireMember, async (req, res) => {
   try {
     const userId = req.user.user_id;
     const { enabled, type, amount } = req.body;
