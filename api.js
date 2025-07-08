@@ -71,6 +71,23 @@ const db = {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'churpay_secret';
 
+// --- USER CREATION HELPER ---
+async function createUser({ name, email, password, isAdmin }) {
+  const existingUser = await dataService.findOne('users', { email });
+  if (existingUser) {
+    throw new Error('Email already exists');
+  }
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const userData = {
+    church_name: name,
+    email,
+    password: hashedPassword,
+    is_admin: isAdmin ? 1 : 0
+  };
+  const result = await dataService.insert('users', userData);
+  return result.id || result.lastInsertRowid;
+}
+
 // --- REGISTER USER/CHURCH/MEMBER ---
 router.post('/register', async (req, res) => {
   const { role, church_name, name, email, password } = req.body;
@@ -88,29 +105,12 @@ router.post('/register', async (req, res) => {
   } else {
     return res.status(400).json({ message: 'Invalid role.' });
   }
-  
   try {
-    // Check if email already exists
-    const existingUser = await dataService.findOne('users', { email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already exists.' });
-    }
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const userData = {
-      church_name: finalChurchName,
-      email,
-      password: hashedPassword
-    };
-    
-    const result = await dataService.insert('users', userData);
-    const userId = result.id || result.lastInsertRowid;
-    
+    const userId = await createUser({ name: finalChurchName, email, password, isAdmin: false });
     res.status(201).json({ message: 'Registration successful!', user_id: userId });
   } catch (err) {
     console.error('Registration error:', err);
-    if (err.message && err.message.includes('duplicate') || err.message.includes('UNIQUE')) {
+    if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE') || err.message.includes('already exists'))) {
       return res.status(400).json({ message: 'Email already exists.' });
     }
     res.status(500).json({ message: 'Database error.', error: err.message });
@@ -128,7 +128,6 @@ router.post('/login', async (req, res) => {
     if (user.suspended) return res.status(403).json({ message: 'Account suspended.' });
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(400).json({ message: 'Invalid credentials.' });
-    const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_123';
     const token = jwt.sign({ user_id: user.id, church_name: user.church_name, is_admin: user.is_admin }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ message: 'Login successful!', token, church_name: user.church_name });
   } catch (err) {
@@ -161,28 +160,11 @@ router.post('/admin-register', async (req, res) => {
     return res.status(400).json({ message: 'All fields are required.' });
   }
   try {
-    // Check if admin email already exists
-    const existingUser = await dataService.findOne('users', { email: admin_email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already exists.' });
-    }
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const userData = {
-      church_name: admin_name,
-      email: admin_email,
-      password: hashedPassword,
-      is_admin: 1
-    };
-    
-    const result = await dataService.insert('users', userData);
-    const userId = result.id || result.lastInsertRowid;
-    
+    const userId = await createUser({ name: admin_name, email: admin_email, password, isAdmin: true });
     res.status(201).json({ message: 'Admin registration successful!', user_id: userId });
   } catch (err) {
     console.error('Admin registration error:', err);
-    if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE'))) {
+    if (err.message && (err.message.includes('duplicate') || err.message.includes('UNIQUE') || err.message.includes('already exists'))) {
       return res.status(400).json({ message: 'Email already exists.' });
     }
     res.status(500).json({ message: 'Database error.', error: err.message });
@@ -272,18 +254,18 @@ router.get('/transactions', async (req, res) => {
 router.get('/admin/stats', requireAdmin, async (req, res) => {
   try {
     // Get counts and totals using data service
-    const churchesResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+    const churchesResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0 AND church_name IS NOT NULL');
     const churches = churchesResult[0].count;
-    
-    const membersResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0');
+
+    const membersResult = await dataService.query('SELECT COUNT(*) as count FROM users WHERE is_admin = 0 AND church_name IS NULL');
     const members = membersResult[0].count;
-    
+
     const transactionsResult = await dataService.query('SELECT COUNT(*) as count FROM transactions');
     const totalTransactions = transactionsResult[0].count;
-    
+
     const revenueResult = await dataService.query('SELECT SUM(CAST(amount AS FLOAT)) as sum FROM transactions WHERE status = $1', ['Success']);
     const totalRevenue = revenueResult[0].sum || 0;
-    
+
     res.json({
       churches,
       members,
