@@ -1,8 +1,16 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const backendApi = require('./index');
+let backendApi;
 
+try {
+  backendApi = require('./index');
+} catch (err) {
+  console.error('Failed to load backend API (./index.js):', err);
+  process.exit(1);
+}
+
+const fs = require('fs');
 const app = express();
 
 // Enable CORS
@@ -16,11 +24,17 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/api', backendApi);
 
 // Static files
-app.use(express.static(path.join(__dirname, 'build')));
+const buildPath = path.join(__dirname, 'build');
+if (!fs.existsSync(buildPath)) {
+  console.error('ERROR: React build directory not found at', buildPath);
+  console.error('Please ensure the React app is built and the build folder is present in the backend directory.');
+  process.exit(1);
+}
+app.use(express.static(buildPath));
 
 // SPA fallback - this should be after all other routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'build', 'index.html'));
+  res.sendFile(path.join(buildPath, 'index.html'));
 });
 
 const PORT = process.env.PORT || 3000;
