@@ -1,3 +1,9 @@
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+
+=======
+>>>>>>> 2e0f7e0 (Add React build folder for deployment)
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -41,3 +47,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`ChurPay server running on port ${PORT}`);
 });
+<<<<<<< HEAD
+=======
+>>>>>>> 1570770 (Add error handling for missing build directory and backendApi import in server.js)
+>>>>>>> 2e0f7e0 (Add React build folder for deployment)
