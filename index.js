@@ -823,4 +823,22 @@ router.post('/api/member/recurring', requireMember, async (req, res) => {
   }
 });
 
+// --- GET: Church Profile ---
+router.get('/api/church/profile', requireMember, async (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    // Fetch church info for this user (assuming user is a church)
+    const churchResults = await dataService.query(
+      'SELECT id, church_name, email, bank_name, bank_account, account_holder FROM users WHERE id = $1',
+      [userId]
+    );
+    if (!churchResults.length) {
+      return res.status(404).json({ error: 'Church not found' });
+    }
+    res.json(churchResults[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch church profile', details: err.message });
+  }
+});
+
 module.exports = router;

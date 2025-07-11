@@ -1,6 +1,5 @@
 {
   "files": {
-<<<<<<< HEAD
     "main.css": "/static/css/main.234391f8.css",
     "main.js": "/static/js/main.905728a1.js",
     "static/js/239.e42dafe1.chunk.js": "/static/js/239.e42dafe1.chunk.js",
@@ -16,24 +15,5 @@
   "entrypoints": [
     "static/css/main.234391f8.css",
     "static/js/main.905728a1.js"
-=======
-    "main.css": "/static/css/main.3e0047f2.css",
-    "main.js": "/static/js/main.0328c3e6.js",
-    "static/js/762.eedb42c4.chunk.js": "/static/js/762.eedb42c4.chunk.js",
-    "static/js/239.da31ef10.chunk.js": "/static/js/239.da31ef10.chunk.js",
-    "static/js/977.fda717fd.chunk.js": "/static/js/977.fda717fd.chunk.js",
-    "static/js/455.9473b7f2.chunk.js": "/static/js/455.9473b7f2.chunk.js",
-    "index.html": "/index.html",
-    "main.3e0047f2.css.map": "/static/css/main.3e0047f2.css.map",
-    "main.0328c3e6.js.map": "/static/js/main.0328c3e6.js.map",
-    "762.eedb42c4.chunk.js.map": "/static/js/762.eedb42c4.chunk.js.map",
-    "239.da31ef10.chunk.js.map": "/static/js/239.da31ef10.chunk.js.map",
-    "977.fda717fd.chunk.js.map": "/static/js/977.fda717fd.chunk.js.map",
-    "455.9473b7f2.chunk.js.map": "/static/js/455.9473b7f2.chunk.js.map"
-  },
-  "entrypoints": [
-    "static/css/main.3e0047f2.css",
-    "static/js/main.0328c3e6.js"
->>>>>>> ba37c04 (Resolve merge conflicts and add server.js)
   ]
 }
